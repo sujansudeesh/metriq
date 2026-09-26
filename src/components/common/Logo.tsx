@@ -60,7 +60,7 @@ export const Logo: React.FC<LogoProps> = ({
 
         {showSubtitle && (
           <span className={`text-[11px] leading-tight font-medium ${isDarkBg ? 'text-slate-400' : 'text-slate-500'}`}>
-            OIML R-76 Test & Compliance System
+            OIML R 76 Test & Compliance System
           </span>
         )}
       </div>
