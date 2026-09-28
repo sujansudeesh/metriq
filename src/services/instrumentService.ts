@@ -1,11 +1,25 @@
 import { supabase, isSupabaseConfigured } from '../lib/supabase';
-import { Instrument } from '../types';
-import { calculateVerificationIntervals } from '../utils/metrologyService';
+import { Instrument, MassUnit } from '../types';
+import { calculateVerificationIntervals, convertMassUnit } from '../utils/metrologyService';
 import { getInstrumentsStore, addInstrument as addInstrumentToMockStore } from '../mock/store';
+import { auditService } from './auditService';
+
+// DB Allowed Units for check constraints
+const ALLOWED_DB_UNITS = ['mg', 'g', 'kg', 't'];
+
+function sanitizeUnitForDb(unit: string | undefined): { valueFactor: number; dbUnit: string } {
+  if (!unit || unit === 'ct') {
+    return { valueFactor: 0.2, dbUnit: 'g' }; // 1 ct = 0.2 g
+  }
+  if (ALLOWED_DB_UNITS.includes(unit)) {
+    return { valueFactor: 1, dbUnit: unit };
+  }
+  return { valueFactor: 1, dbUnit: 'kg' };
+}
 
 export const instrumentService = {
   /**
-   * Fetch all instruments
+   * Fetch all instruments from Supabase or Local Mock Store
    */
   async getInstruments(): Promise<Instrument[]> {
     if (isSupabaseConfigured() && supabase) {
@@ -14,9 +28,11 @@ export const instrumentService = {
         .select('*')
         .order('created_at', { ascending: false });
 
-      if (!error && data && data.length > 0) {
-        return data.map((row) => this.mapRowToInstrument(row));
+      if (error) {
+        throw new Error(`Failed to fetch instruments from Supabase: ${error.message}`);
       }
+
+      return (data || []).map((row) => this.mapRowToInstrument(row));
     }
 
     return getInstrumentsStore();
@@ -33,9 +49,14 @@ export const instrumentService = {
         .or(`id.eq.${id},instrument_code.eq.${id}`)
         .maybeSingle();
 
-      if (!error && data) {
+      if (error) {
+        throw new Error(`Failed to fetch instrument from Supabase: ${error.message}`);
+      }
+
+      if (data) {
         return this.mapRowToInstrument(data);
       }
+      return null;
     }
 
     const instruments = getInstrumentsStore();
@@ -47,6 +68,8 @@ export const instrumentService = {
    * Calculates n = Max / e using metrology service before storing!
    */
   async saveInstrument(instrument: Instrument): Promise<Instrument> {
+    const existing = await this.getInstrumentById(instrument.id).catch(() => null);
+
     // 1. Calculate verified n value using existing metrology service
     const verifiedN = calculateVerificationIntervals(
       instrument.metrology.maxCapacity,
@@ -63,6 +86,8 @@ export const instrumentService = {
       },
     };
 
+    let savedInstrument: Instrument;
+
     if (isSupabaseConfigured() && supabase) {
       const row = this.mapInstrumentToRow(verifiedInstrument);
       const { data, error } = await supabase
@@ -75,12 +100,32 @@ export const instrumentService = {
         throw new Error(`Failed to save instrument to database: ${error.message}`);
       }
 
-      return this.mapRowToInstrument(data);
+      savedInstrument = this.mapRowToInstrument(data);
+    } else {
+      // Local Store Fallback (Demo / Offline Mode)
+      addInstrumentToMockStore(verifiedInstrument);
+      savedInstrument = verifiedInstrument;
     }
 
-    // Local Store Fallback
-    addInstrumentToMockStore(verifiedInstrument);
-    return verifiedInstrument;
+    try {
+      await auditService.logAuditEvent({
+        action: existing ? 'INSTRUMENT_UPDATED' : 'INSTRUMENT_CREATED',
+        entityType: 'instrument',
+        entityId: savedInstrument.id,
+        instrumentId: savedInstrument.id,
+        beforeValue: existing ? existing : null,
+        afterValue: savedInstrument,
+        details: {
+          description: existing
+            ? `Updated instrument ${savedInstrument.id} (${savedInstrument.model?.modelName || 'Scale'})`
+            : `Created new instrument ${savedInstrument.id} (${savedInstrument.model?.modelName || 'Scale'})`,
+        },
+      });
+    } catch (_auditErr) {
+      // Don't interrupt instrument save if audit table log fails
+    }
+
+    return savedInstrument;
   },
 
   /**
@@ -163,28 +208,34 @@ export const instrumentService = {
       ? instrument.status
       : 'ACTIVE';
 
+    const maxSan = sanitizeUnitForDb(instrument.metrology.maxUnit);
+    const minSan = sanitizeUnitForDb(instrument.metrology.minUnit);
+    const dSan = sanitizeUnitForDb(instrument.metrology.dUnit);
+    const eSan = sanitizeUnitForDb(instrument.metrology.eUnit);
+    const tareSan = sanitizeUnitForDb(instrument.metrology.maximumTareUnit);
+
     return {
-      instrument_code: instrument.id.startsWith('INS-') ? instrument.id : `INS-${Date.now()}`,
+      instrument_code: instrument.id.startsWith('INS-') || instrument.id.startsWith('NAWI-') ? instrument.id : `INS-${Date.now()}`,
       manufacturer: instrument.manufacturer?.name || 'Unknown Manufacturer',
       model: instrument.model?.modelName || 'Model Standard',
       serial_number: instrument.model?.serialNumber || instrument.id,
       instrument_type: instrument.model?.instrumentType || 'Electronic Weighing Scale',
       accuracy_class: canonicalClass,
-      max_capacity: instrument.metrology.maxCapacity,
-      max_unit: instrument.metrology.maxUnit,
-      min_capacity: instrument.metrology.minCapacity,
-      min_unit: instrument.metrology.minUnit,
-      scale_interval_d: instrument.metrology.scaleIntervalD,
-      scale_interval_d_unit: instrument.metrology.dUnit,
-      verification_interval_e: instrument.metrology.verificationIntervalE,
-      verification_interval_e_unit: instrument.metrology.eUnit,
+      max_capacity: instrument.metrology.maxCapacity * maxSan.valueFactor,
+      max_unit: maxSan.dbUnit,
+      min_capacity: instrument.metrology.minCapacity * minSan.valueFactor,
+      min_unit: minSan.dbUnit,
+      scale_interval_d: instrument.metrology.scaleIntervalD * dSan.valueFactor,
+      scale_interval_d_unit: dSan.dbUnit,
+      verification_interval_e: instrument.metrology.verificationIntervalE * eSan.valueFactor,
+      verification_interval_e_unit: eSan.dbUnit,
       verification_intervals_n: verifiedN,
       digital_indication: true,
       zero_setting_type: instrument.metrology.zeroSettingType || 'SEMI_AUTOMATIC',
       tare_device_available: Boolean(instrument.metrology.tareDeviceAvailable),
       tare_type: instrument.metrology.tareType || 'NONE',
-      maximum_tare_effect: instrument.metrology.maximumTareEffect || 0,
-      maximum_tare_unit: instrument.metrology.maximumTareUnit || 'kg',
+      maximum_tare_effect: (instrument.metrology.maximumTareEffect || 0) * tareSan.valueFactor,
+      maximum_tare_unit: tareSan.dbUnit,
       load_receptor_type: 'PLATFORM',
       number_of_supports: 4,
       status: masterStatus,

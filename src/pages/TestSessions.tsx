@@ -24,8 +24,15 @@ export const TestSessions: React.FC = () => {
   const [selectedInstId, setSelectedInstId] = useState(instruments[0]?.id || '');
 
   React.useEffect(() => {
-    const handleSync = () => {
-      setSessions(testSessionService.getAllSessions());
+    let isMounted = true;
+    const handleSync = async () => {
+      try {
+        const data = await testSessionService.getAllSessionsAsync();
+        if (isMounted) setSessions(data);
+      } catch (err: any) {
+        console.warn('Async session fetch fallback:', err.message);
+        if (isMounted) setSessions(testSessionService.getAllSessions());
+      }
     };
 
     handleSync();
@@ -33,6 +40,7 @@ export const TestSessions: React.FC = () => {
     window.addEventListener('storage', handleSync);
     window.addEventListener('nawi_session_updated', handleSync);
     return () => {
+      isMounted = false;
       window.removeEventListener('storage', handleSync);
       window.removeEventListener('nawi_session_updated', handleSync);
     };
@@ -90,43 +98,43 @@ export const TestSessions: React.FC = () => {
   return (
     <div className="space-y-6">
       {/* Header Toolbar */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-white p-6 rounded-xl border border-slate-200/80 shadow-xs">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-white p-6 rounded-xl border border-[#D9D3C7] shadow-xs">
         <div>
-          <h2 className="text-xl font-extrabold text-slate-900 tracking-tight">OIML R-76 Test Sessions</h2>
-          <p className="text-xs text-slate-500 mt-1">
+          <h2 className="text-xl font-extrabold text-[#0B1F3A] tracking-tight">OIML R-76 Test Sessions</h2>
+          <p className="text-xs text-[#5F6B7A] mt-1">
             Active evaluation logs, prescribed test observations, and compliance reviews.
           </p>
         </div>
 
         <button
           onClick={() => setIsModalOpen(true)}
-          className="flex items-center justify-center gap-2 px-4 py-2.5 bg-teal-600 hover:bg-teal-700 text-white font-semibold text-xs rounded-lg transition-colors shadow-xs shrink-0"
+          className="flex items-center justify-center gap-2 px-4 py-2.5 bg-[#0B1F3A] hover:bg-[#12355B] text-[#C8A46B] font-bold text-xs rounded-lg transition-colors border border-[#C8A46B]/40 shadow-xs shrink-0 cursor-pointer"
         >
-          <Plus className="w-4 h-4" />
+          <Plus className="w-4 h-4 text-[#C8A46B]" />
           Start New Test Session
         </button>
       </div>
 
       {/* Filter and Search Bar */}
-      <div className="bg-white p-4 rounded-xl border border-slate-200/80 shadow-xs space-y-3">
+      <div className="bg-white p-4 rounded-xl border border-[#D9D3C7] shadow-xs space-y-3">
         <div className="flex flex-col md:flex-row items-center gap-3">
           <div className="relative flex-1 w-full">
-            <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+            <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-[#5F6B7A]" />
             <input
               type="text"
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
               placeholder="Search by Test ID, Instrument ID, model, or manufacturer..."
-              className="w-full pl-10 pr-4 py-2 text-xs bg-slate-50 border border-slate-200 rounded-lg text-slate-800 placeholder-slate-400 focus:outline-hidden focus:bg-white focus:ring-2 focus:ring-teal-500/20 focus:border-teal-600"
+              className="w-full pl-10 pr-4 py-2 text-xs bg-[#F9F9F7] border border-[#D9D3C7] rounded-lg text-[#1A1F2B] placeholder-[#5F6B7A] focus:outline-hidden focus:bg-white focus:border-[#C8A46B]"
             />
           </div>
 
           <div className="flex items-center gap-1.5 w-full md:w-auto">
-            <Filter className="w-3.5 h-3.5 text-slate-400 shrink-0 hidden md:block" />
+            <Filter className="w-3.5 h-3.5 text-[#5F6B7A] shrink-0 hidden md:block" />
             <select
               value={statusFilter}
               onChange={(e) => setStatusFilter(e.target.value)}
-              className="w-full md:w-auto px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-lg text-slate-700 font-medium focus:outline-hidden focus:border-teal-600"
+              className="w-full md:w-auto px-3 py-2 text-xs bg-[#F9F9F7] border border-[#D9D3C7] rounded-lg text-[#1A1F2B] font-medium focus:outline-hidden focus:border-[#C8A46B]"
             >
               <option value="All">All Test Session Statuses</option>
               <option value="In Progress">In Progress</option>
@@ -142,7 +150,7 @@ export const TestSessions: React.FC = () => {
               setSearchTerm('');
               setStatusFilter('All');
             }}
-            className="p-2 text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded-lg transition-colors shrink-0"
+            className="p-2 text-[#5F6B7A] hover:text-[#0B1F3A] hover:bg-[#F4ECDD] rounded-lg transition-colors shrink-0 cursor-pointer"
             title="Reset Filters"
           >
             <RefreshCw className="w-4 h-4" />
@@ -151,11 +159,11 @@ export const TestSessions: React.FC = () => {
       </div>
 
       {/* Test Sessions Table */}
-      <div className="bg-white rounded-xl border border-slate-200/80 shadow-xs overflow-hidden">
+      <div className="bg-white rounded-xl border border-[#D9D3C7] shadow-xs overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-left border-collapse">
             <thead>
-              <tr className="bg-slate-50/80 text-[11px] font-semibold uppercase tracking-wider text-slate-500 border-b border-slate-200/80">
+              <tr className="bg-[#0B1F3A] text-white text-[11px] font-bold uppercase tracking-wider">
                 <th className="py-3 px-4">Test ID</th>
                 <th className="py-3 px-4">Instrument ID</th>
                 <th className="py-3 px-4">Model & Manufacturer</th>
@@ -167,23 +175,23 @@ export const TestSessions: React.FC = () => {
                 <th className="py-3 px-4 text-right">Actions</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-100 text-xs text-slate-700">
+            <tbody className="divide-y divide-[#D9D3C7] text-xs text-[#1A1F2B]">
               {filteredSessions.map((session) => (
                 <tr
                   key={session.id}
                   onClick={() => navigate(`/test-sessions/${session.id}`)}
-                  className="hover:bg-slate-50/80 cursor-pointer transition-colors"
+                  className="hover:bg-[#F4ECDD]/30 cursor-pointer transition-colors"
                 >
-                  <td className="py-3.5 px-4 font-mono font-bold text-slate-900">{session.id}</td>
-                  <td className="py-3.5 px-4 font-mono text-slate-600">{session.instrumentId}</td>
+                  <td className="py-3.5 px-4 font-mono font-bold text-[#0B1F3A]">{session.id}</td>
+                  <td className="py-3.5 px-4 font-mono text-[#5F6B7A]">{session.instrumentId}</td>
                   <td className="py-3.5 px-4">
-                    <div className="font-semibold text-slate-900">{session.instrumentModel}</div>
-                    <div className="text-[10px] text-slate-500">{session.manufacturer}</div>
+                    <div className="font-bold text-[#0B1F3A]">{session.instrumentModel}</div>
+                    <div className="text-[10px] text-[#5F6B7A]">{session.manufacturer}</div>
                   </td>
                   <td className="py-3.5 px-4">
                     <Badge status={session.accuracyClass} size="sm" />
                   </td>
-                  <td className="py-3.5 px-4 text-slate-500">{session.startedOn}</td>
+                  <td className="py-3.5 px-4 text-[#5F6B7A]">{session.startedOn}</td>
                   <td className="py-3.5 px-4 w-32">
                     {(() => {
                       const { percentage } = calculateTestProgress(session);
@@ -192,12 +200,12 @@ export const TestSessions: React.FC = () => {
                           <div className="flex-1 h-1.5 bg-slate-100 rounded-full overflow-hidden">
                             <div
                               className={`h-full rounded-full ${
-                                percentage === 100 ? 'bg-emerald-500' : 'bg-teal-500'
+                                percentage === 100 ? 'bg-emerald-500' : 'bg-[#0B1F3A]'
                               }`}
                               style={{ width: `${percentage}%` }}
                             />
                           </div>
-                          <span className="text-[10px] font-mono text-slate-500">{percentage}%</span>
+                          <span className="text-[10px] font-mono text-[#5F6B7A]">{percentage}%</span>
                         </div>
                       );
                     })()}
@@ -205,14 +213,14 @@ export const TestSessions: React.FC = () => {
                   <td className="py-3.5 px-4">
                     <Badge status={session.status} size="sm" />
                   </td>
-                  <td className="py-3.5 px-4 text-slate-600 font-medium">{session.assignedOfficer}</td>
+                  <td className="py-3.5 px-4 text-[#1A1F2B] font-medium">{session.assignedOfficer}</td>
                   <td className="py-3.5 px-4 text-right">
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
                         navigate(`/test-sessions/${session.id}`);
                       }}
-                      className="px-3 py-1 bg-slate-900 hover:bg-slate-800 text-white font-semibold text-[11px] rounded transition-colors"
+                      className="px-3 py-1 bg-[#0B1F3A] hover:bg-[#12355B] text-[#C8A46B] font-bold text-[11px] rounded transition-colors border border-[#C8A46B]/40"
                     >
                       Open Workspace
                     </button>
@@ -234,13 +242,13 @@ export const TestSessions: React.FC = () => {
       >
         <form onSubmit={handleCreateSession} className="space-y-4">
           <div>
-            <label className="block text-xs font-semibold text-slate-700 mb-1.5">
+            <label className="block text-xs font-semibold text-[#0B1F3A] mb-1.5">
               Select Registered Instrument
             </label>
             <select
               value={selectedInstId}
               onChange={(e) => setSelectedInstId(e.target.value)}
-              className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-lg text-slate-900 font-medium focus:outline-hidden focus:border-teal-600"
+              className="w-full px-3 py-2 text-xs bg-[#F9F9F7] border border-[#D9D3C7] rounded-lg text-[#1A1F2B] font-medium focus:outline-hidden focus:border-[#C8A46B]"
             >
               {instruments.map((inst) => (
                 <option key={inst.id} value={inst.id}>
@@ -250,9 +258,9 @@ export const TestSessions: React.FC = () => {
             </select>
           </div>
 
-          <div className="p-3 bg-teal-50 border border-teal-200 rounded-lg text-xs text-teal-800 space-y-1">
-            <p className="font-semibold">OIML R-76 Evaluation Protocol</p>
-            <p className="text-[11px] text-teal-700">
+          <div className="p-3 bg-[#F4ECDD] border border-[#D9D3C7] rounded-lg text-xs text-[#0B1F3A] space-y-1">
+            <p className="font-bold">OIML R-76 Evaluation Protocol</p>
+            <p className="text-[11px] text-[#5F6B7A]">
               Initializes prescribed test modules: Weighing performance, repeatability, eccentricity loading, subtractive tare, and discrimination.
             </p>
           </div>
@@ -261,15 +269,15 @@ export const TestSessions: React.FC = () => {
             <button
               type="button"
               onClick={() => setIsModalOpen(false)}
-              className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold text-xs rounded-lg transition-colors"
+              className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-[#1A1F2B] font-semibold text-xs rounded-lg transition-colors cursor-pointer"
             >
               Cancel
             </button>
             <button
               type="submit"
-              className="flex items-center gap-2 px-5 py-2 bg-teal-600 hover:bg-teal-700 text-white font-bold text-xs rounded-lg transition-colors shadow-xs"
+              className="flex items-center gap-2 px-5 py-2 bg-[#0B1F3A] hover:bg-[#12355B] text-[#C8A46B] font-bold text-xs rounded-lg transition-colors border border-[#C8A46B]/40 shadow-xs cursor-pointer"
             >
-              <PlayCircle className="w-4 h-4" /> Start Evaluation Workspace
+              <PlayCircle className="w-4 h-4 text-[#C8A46B]" /> Start Evaluation Workspace
             </button>
           </div>
         </form>

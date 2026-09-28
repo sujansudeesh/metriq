@@ -8,6 +8,7 @@ import { documentService, DocumentRecord } from '../services/documentService';
 import { testSessionService } from '../services/testSessionService';
 import { instrumentService } from '../services/instrumentService';
 import { authService } from '../services/authService';
+import { docxReportService } from '../services/docxReportService';
 import { useToast } from '../components/common/Toast';
 import { Report, TestSession, Instrument } from '../types';
 
@@ -24,7 +25,22 @@ export const ReportDetail: React.FC = () => {
 
   const [loading, setLoading] = useState(true);
   const [generatingPdf, setGeneratingPdf] = useState(false);
+  const [downloadingDocx, setDownloadingDocx] = useState(false);
   const [showVersionHistory, setShowVersionHistory] = useState(false);
+
+  const handleDownloadDocx = async () => {
+    if (!report) return;
+    setDownloadingDocx(true);
+    try {
+      const userProfile = await authService.getCurrentProfile();
+      await docxReportService.downloadDocxReport(report, session || undefined, instrument || undefined, userProfile || undefined);
+      showToast('Word Report Downloaded', `Editable Word (.docx) report generated and downloaded.`, 'success');
+    } catch (err: any) {
+      showToast('Docx Generation Error', err.message || 'Unable to generate Word report.', 'error');
+    } finally {
+      setDownloadingDocx(false);
+    }
+  };
 
   const loadReportData = async () => {
     if (!id) return;
@@ -131,6 +147,21 @@ export const ReportDetail: React.FC = () => {
           >
             <Printer className="w-3.5 h-3.5" />
             <span>Print Layout</span>
+          </button>
+
+          <button
+            onClick={handleDownloadDocx}
+            disabled={downloadingDocx}
+            className="flex items-center gap-1.5 px-4 py-1.5 bg-[#0B1F3A] hover:bg-[#1E293B] text-[#C8A46B] border border-[#C8A46B]/60 font-bold text-xs rounded-lg transition-colors shadow-xs cursor-pointer disabled:opacity-50"
+          >
+            {downloadingDocx ? (
+              <span>Generating Word...</span>
+            ) : (
+              <>
+                <FileText className="w-3.5 h-3.5 text-[#C8A46B]" />
+                <span>Download Word (.docx)</span>
+              </>
+            )}
           </button>
 
           <button

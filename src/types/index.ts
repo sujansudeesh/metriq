@@ -151,11 +151,15 @@ export interface WeighingTestObservation {
 }
 
 export interface RepeatabilityTestObservation {
+  id?: string;
   runNumber: number;
   load: number;
   indicatedValue: number;
-  zeroIndication: number;
-  error: number;
+  zeroIndication?: number;
+  deltaL?: number;
+  error?: number;
+  calculatedError?: number;
+  passed?: boolean;
 }
 
 export type EccentricityProfile =
@@ -177,6 +181,7 @@ export interface EccentricityTestObservation {
   locationLabel: string;
   load: number;
   indicatedValue: number;
+  deltaL?: number;
   error: number;
   passed: boolean;
   mpeValue?: number;
@@ -344,6 +349,20 @@ export interface TestModuleConfig {
   notes?: string;
 }
 
+export interface EnvironmentalConditionRow {
+  temp?: number | string;
+  humidity?: number | string;
+  time?: string;
+  pressure?: number | string;
+  pressureNotApplicable?: boolean;
+}
+
+export interface EnvironmentalConditionsData {
+  start?: EnvironmentalConditionRow;
+  maxLoad?: EnvironmentalConditionRow;
+  end?: EnvironmentalConditionRow;
+}
+
 export interface TestSession {
   id: string;
   instrumentId: string;
@@ -395,6 +414,7 @@ export interface TestSession {
   ambientTemp: number;
   relativeHumidity: number;
   barometricPressure: number;
+  environmentalConditions?: EnvironmentalConditionsData;
   eccentricityProfile?: EccentricityProfile;
   eccentricityNumSupports?: number;
   eccentricityTestLoad?: number;
@@ -409,6 +429,9 @@ export interface TestSession {
   staticTemperatureSession?: any;
   overallVerdict?: ComplianceStatus;
   comments?: string;
+  notes?: string;
+  scaleInterval?: string;
+  session_code?: string;
 }
 
 export interface Report {
@@ -427,6 +450,8 @@ export interface Report {
   labDirector: string;
   verdict: ComplianceStatus;
   downloadUrl?: string;
+  versionNumber?: number;
+  snapshotData?: any;
 }
 
 export interface AuditLog {
@@ -437,6 +462,11 @@ export interface AuditLog {
   action: string;
   details: string;
   instrumentOrSessionId: string;
+  entityType?: string;
+  entityId?: string;
+  beforeValue?: any;
+  afterValue?: any;
+  reason?: string;
 }
 
 export interface User {

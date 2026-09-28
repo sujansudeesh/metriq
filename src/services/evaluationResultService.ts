@@ -291,3 +291,38 @@ export function isSessionReadyForReview(session: TestSession): {
     incompleteModules: [],
   };
 }
+
+/**
+ * Maps raw internal workflow status strings into clean, user-friendly labels.
+ */
+export function getFriendlyWorkflowStatus(status?: string): string {
+  if (!status) return 'Draft';
+  switch (status.toUpperCase()) {
+    case 'IN_PROGRESS':
+    case 'TESTING':
+      return 'Testing in Progress';
+    case 'TESTING_COMPLETE':
+      return 'Testing Complete';
+    case 'UNDER_REVIEW':
+    case 'SUBMITTED_FOR_REVIEW':
+      return 'Under Technical Review';
+    case 'TECHNICALLY_APPROVED':
+      return 'Technical Review Approved';
+    case 'CHANGES_REQUESTED':
+    case 'NEEDS_CORRECTION':
+      return 'Corrections Required';
+    case 'APPROVED':
+      return 'Evaluation Approved';
+    case 'FINALIZED':
+    case 'COMPLETED':
+      return 'Final Certificate Issued';
+    case 'DRAFT':
+      return 'Draft Test';
+    default:
+      return status
+        .replace(/_/g, ' ')
+        .toLowerCase()
+        .replace(/\b\w/g, (c) => c.toUpperCase());
+  }
+}
+

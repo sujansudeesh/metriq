@@ -1,0 +1,127 @@
+{
+  "common": {
+    "appName": "METRIQ",
+    "systemTitle": "Type Evaluation & OIML R 76 Test Automation",
+    "govIndia": "Government of India • Directorate of Legal Metrology",
+    "labDivision": "National Metrology Laboratory • Type Evaluation Division",
+    "language": "Language",
+    "english": "English",
+    "kannada": "ಕನ್ನಡ"
+  },
+  "nav": {
+    "dashboard": "Dashboard",
+    "instruments": "Instruments",
+    "tests": "Test Sessions",
+    "reports": "Certificates & Reports",
+    "users": "User Directory",
+    "audit": "Audit Log",
+    "settings": "System Settings",
+    "signOut": "Sign Out"
+  },
+  "login": {
+    "title": "Laboratory Portal Sign In",
+    "emailLabel": "Official Email Address",
+    "emailPlaceholder": "officer@metrology.gov.in",
+    "passwordLabel": "Password",
+    "signInBtn": "Sign In to Laboratory Portal",
+    "signingIn": "Authenticating...",
+    "forgotPassword": "Forgot Password?",
+    "resetTitle": "Reset Password",
+    "resetInstruction": "Enter your email address to receive password reset instructions.",
+    "sendResetLink": "Send Reset Instructions",
+    "backToSignIn": "Back to Sign In",
+    "demoCredentials": "Demo Login Quick Select:"
+  },
+  "dashboard": {
+    "welcome": "Laboratory Test Automation Overview",
+    "startNewTest": "Start New Test Session",
+    "registerInstrument": "Register New Instrument",
+    "activeSessions": "Active Test Sessions",
+    "completedReports": "Completed Evaluation Reports",
+    "registeredInstruments": "Registered Instruments",
+    "pendingReviews": "Pending Review Items",
+    "quickActions": "Quick Laboratory Actions",
+    "recentActivity": "Recent Testing Activity",
+    "continueTest": "Continue Test",
+    "viewDetails": "View Details",
+    "viewReport": "View Report",
+    "searchPlaceholder": "Search test sessions, instruments, models..."
+  },
+  "instruments": {
+    "title": "Instruments Registry",
+    "registerBtn": "Register New Instrument",
+    "searchPlaceholder": "Search by model, serial no, manufacturer...",
+    "model": "Model",
+    "manufacturer": "Manufacturer",
+    "serialNumber": "Serial Number",
+    "accuracyClass": "Accuracy Class",
+    "maxCapacity": "Max Capacity (Max)",
+    "minCapacity": "Min Capacity (Min)",
+    "verificationInterval": "Verification Interval (e)",
+    "scaleInterval": "Scale Interval (d)",
+    "scaleIntervalsN": "Number of Intervals (n)",
+    "status": "Status",
+    "actions": "Actions",
+    "startEvaluation": "Start Test Session"
+  },
+  "tests": {
+    "title": "OIML R 76 Digital Test Sessions",
+    "sessionCode": "Session ID",
+    "instrument": "Instrument",
+    "assignedOfficer": "Assigned Officer",
+    "progress": "Progress",
+    "workflowStatus": "Workflow Status",
+    "actions": "Actions",
+    "openSession": "Open Test Sheet",
+    "kannadaGuidanceNotice": "Kannada Assistance Guidance:",
+    "saveDraft": "Save Draft",
+    "saveAndNext": "Save & Next Test Module",
+    "previousTest": "Previous Test Module",
+    "completeSession": "Complete Test & Submit for Review",
+    "submitForReview": "Submit for Technical Review",
+    "readOnlyNotice": "This test session is in Read-Only mode.",
+    "envConditionsNotice": "Environmental conditions entries are observed during initial setup and testing."
+  },
+  "testModules": {
+    "weighing": "Weighing Performance Test",
+    "repeatability": "Repeatability Test",
+    "eccentricity": "Eccentricity Loading Test",
+    "discrimination": "Digital Discrimination Test",
+    "zeroSetting": "Zero-Setting Accuracy Test",
+    "tare": "Tare Operation Test",
+    "staticTemp": "Static Temperature Influence Test",
+    "guidance": {
+      "weighing": "Observe display indication for increasing and decreasing test loads across the measuring range.",
+      "repeatability": "Apply the same load multiple times at the center of the load receptor to measure repeatability.",
+      "eccentricity": "Apply 1/3 of Max load at designated off-center positions (front, rear, left, right, center).",
+      "discrimination": "Observe if an additional load of 1.4d produces a clear change in digital indication.",
+      "zeroSetting": "Verify zero indication accuracy after unloading or pressing zero.",
+      "tare": "Apply tare load, balance to zero NET indication, and verify net weighing accuracy."
+    }
+  },
+  "reports": {
+    "title": "Certificates & Evaluation Reports Registry",
+    "reportNumber": "Report No.",
+    "certificateId": "Certificate ID",
+    "verdict": "Evaluation Verdict",
+    "compliant": "COMPLIANT",
+    "nonCompliant": "NON-COMPLIANT",
+    "downloadPdf": "Download Real PDF",
+    "downloadWord": "Download Word (.docx)",
+    "printLayout": "Print / Save PDF Layout"
+  },
+  "review": {
+    "title": "Workflow Review & Approval Portal",
+    "approveBtn": "Approve Test Evaluation",
+    "requestCorrections": "Request Corrections",
+    "finalizeBtn": "Finalize Official Report",
+    "comments": "Review Comments / Audit Remarks"
+  },
+  "messages": {
+    "saveSuccess": "Changes saved successfully.",
+    "saveFailed": "Failed to save changes. Please try again.",
+    "observationSaved": "Observation entry recorded.",
+    "completeRequired": "Please fill in all required fields before proceeding.",
+    "langChanged": "UI language updated to {{lang}}."
+  }
+}

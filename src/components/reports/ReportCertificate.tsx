@@ -1,7 +1,8 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Report, TestSession, Instrument } from '../../types';
 import { Logo } from '../common/Logo';
-import { ShieldCheck, Award, Printer, Download, CheckCircle2, XCircle } from 'lucide-react';
+import { ShieldCheck, Award, Printer, Download, CheckCircle2, XCircle, FileText } from 'lucide-react';
+import { docxReportService } from '../../services/docxReportService';
 
 interface ReportCertificateProps {
   report: Report;
@@ -17,21 +18,41 @@ export const ReportCertificate: React.FC<ReportCertificateProps> = ({
   onPrint,
 }) => {
   const isCompliant = report.verdict === 'Compliant';
+  const [downloadingDocx, setDownloadingDocx] = useState(false);
+
+  const handleDownloadDocx = async () => {
+    try {
+      setDownloadingDocx(true);
+      await docxReportService.downloadDocxReport(report, session, instrument);
+    } catch (err) {
+      console.error('Failed to generate docx report:', err);
+    } finally {
+      setDownloadingDocx(false);
+    }
+  };
 
   return (
     <div className="space-y-4">
       {/* Top Action Toolbar (Hidden when printing) */}
-      <div className="no-print flex items-center justify-between p-4 bg-slate-900 text-white rounded-xl shadow-md">
+      <div className="no-print flex items-center justify-between p-4 bg-[#0B1F3A] text-white rounded-xl shadow-md border border-[#C8A46B]/40">
         <div className="flex items-center gap-2">
-          <Award className="w-5 h-5 text-teal-400" />
+          <Award className="w-5 h-5 text-[#C8A46B]" />
           <span className="font-semibold text-sm">OIML R 76 Test Evaluation Report View</span>
         </div>
         <div className="flex items-center gap-2">
           <button
-            onClick={onPrint || (() => window.print())}
-            className="flex items-center gap-2 px-3.5 py-1.5 bg-teal-600 hover:bg-teal-700 text-white font-medium text-xs rounded-lg transition-colors shadow-xs"
+            onClick={handleDownloadDocx}
+            disabled={downloadingDocx}
+            className="flex items-center gap-2 px-3.5 py-1.5 bg-[#0B1F3A] hover:bg-[#1E293B] text-[#C8A46B] border border-[#C8A46B] font-bold text-xs rounded-lg transition-colors shadow-xs cursor-pointer disabled:opacity-50"
           >
-            <Printer className="w-4 h-4" />
+            <FileText className="w-4 h-4 text-[#C8A46B]" />
+            {downloadingDocx ? 'Generating Word...' : 'Download Word (.docx)'}
+          </button>
+          <button
+            onClick={onPrint || (() => window.print())}
+            className="flex items-center gap-2 px-3.5 py-1.5 bg-[#C8A46B] hover:bg-[#B79055] text-[#08162A] font-extrabold text-xs rounded-lg transition-colors shadow-xs cursor-pointer"
+          >
+            <Printer className="w-4 h-4 text-[#08162A]" />
             Print / Save as PDF
           </button>
         </div>

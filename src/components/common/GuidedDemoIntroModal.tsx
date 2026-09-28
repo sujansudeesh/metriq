@@ -51,7 +51,7 @@ export const GuidedDemoIntroModal: React.FC<GuidedDemoIntroModalProps> = ({ isOp
             </div>
             <div>
               <div className="flex items-center gap-2">
-                <h2 className="text-xl font-extrabold tracking-tight text-white">NAWI Verify</h2>
+                <h2 className="text-xl font-extrabold tracking-tight text-white">METRIQ</h2>
                 <span className="px-2 py-0.5 rounded text-[10px] font-extrabold uppercase bg-teal-500 text-slate-950">
                   SIH 2026 DEMONSTRATION
                 </span>
@@ -123,7 +123,7 @@ export const GuidedDemoIntroModal: React.FC<GuidedDemoIntroModalProps> = ({ isOp
                   OUR SOLUTION
                 </span>
                 <p className="text-xs text-slate-300 leading-relaxed">
-                  NAWI Verify converts the legal metrology test procedure into a guided, rule-driven digital laboratory workflow with automated OIML R 76 tolerances and multi-role approvals.
+                  METRIQ converts the legal metrology test procedure into a guided, rule-driven digital laboratory workflow with automated OIML R 76 tolerances and multi-role approvals.
                 </p>
               </div>
 
@@ -171,7 +171,7 @@ export const GuidedDemoIntroModal: React.FC<GuidedDemoIntroModalProps> = ({ isOp
             <div className="p-4 rounded-xl bg-teal-950/30 border border-teal-500/40 space-y-3">
               <div className="flex items-center justify-between border-b border-teal-800/60 pb-2">
                 <span className="font-extrabold text-teal-400 uppercase tracking-wider text-[11px]">
-                  NAWI VERIFY WORKFLOW (Digital System)
+                  METRIQ WORKFLOW (Digital System)
                 </span>
               </div>
               <ul className="space-y-2 text-teal-200 font-mono text-[11px]">

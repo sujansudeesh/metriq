@@ -2,13 +2,27 @@
 @tailwind components;
 @tailwind utilities;
 
+:root {
+  --color-primary-navy: #0B1F3A;
+  --color-secondary-navy: #12355B;
+  --color-deep-navy: #08162A;
+  --color-beige-accent: #C8A46B;
+  --color-beige-hover: #B79055;
+  --color-soft-beige: #F4ECDD;
+  --color-border: #D9D3C7;
+  --color-text-primary: #1A1F2B;
+  --color-text-muted: #5F6B7A;
+}
+
 @layer base {
   body {
-    @apply bg-slate-50 text-slate-900 font-sans;
+    background-color: #F9F9F7;
+    color: #1A1F2B;
+    font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans Kannada", "Tunga", "Kedage", "Helvetica Neue", Arial, sans-serif;
   }
 }
 
-/* Custom Print Styles for Official OIML R-76 Test Report Certificates */
+/* Custom Print Styles for Official OIML R 76 Test Report Certificates */
 @media print {
   body {
     background: white !important;

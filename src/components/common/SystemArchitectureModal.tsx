@@ -19,7 +19,7 @@ export const SystemArchitectureModal: React.FC<SystemArchitectureModalProps> = (
               <Server className="w-6 h-6" />
             </div>
             <div>
-              <h2 className="text-xl font-extrabold tracking-tight text-white">NAWI Verify System Architecture</h2>
+              <h2 className="text-xl font-extrabold tracking-tight text-white">METRIQ System Architecture</h2>
               <p className="text-xs text-slate-400">Technical Stack, Security Story, Traceability &amp; Hardware Integration Model</p>
             </div>
           </div>
@@ -34,7 +34,7 @@ export const SystemArchitectureModal: React.FC<SystemArchitectureModalProps> = (
             <Layers className="w-4 h-4" /> End-to-End Technical Architecture
           </h4>
           <div className="font-mono text-[11px] text-slate-300 bg-slate-900 p-4 rounded-lg border border-slate-800 space-y-2 text-center">
-            <p className="font-bold text-white">NAWI VERIFY (React 18 + TypeScript + Vite)</p>
+            <p className="font-bold text-white">METRIQ (React 18 + TypeScript + Vite)</p>
             <p className="text-slate-500">│</p>
             <p className="font-bold text-teal-300">Application Services &amp; Workflow Layer</p>
             <div className="grid grid-cols-3 gap-2 text-[10px] text-slate-300 my-2">
@@ -78,7 +78,7 @@ export const SystemArchitectureModal: React.FC<SystemArchitectureModalProps> = (
               <Cpu className="w-4 h-4" /> Hardware Connectivity Story
             </h4>
             <div className="space-y-1 text-slate-300 leading-relaxed text-[11px]">
-              <p><strong>CURRENT SIH PROTOTYPE:</strong> Certified test weights are physically applied by the laboratory officer, who enters the instrument indication into NAWI Verify.</p>
+              <p><strong>CURRENT SIH PROTOTYPE:</strong> Certified test weights are physically applied by the laboratory officer, who enters the instrument indication into METRIQ.</p>
               <p><strong>FUTURE EXPANSION:</strong> Direct data acquisition through supported instrument interfaces such as RS-232 / USB ports.</p>
             </div>
           </div>

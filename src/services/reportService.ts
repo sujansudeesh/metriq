@@ -20,6 +20,158 @@ export interface ReportVersionRecord {
 
 export const reportService = {
   /**
+   * Build immutable snapshot data from a test session for report issuance
+   */
+  createSnapshotData(session: TestSession): any {
+    const sessionCode = session.session_code || session.id;
+    return {
+      reportNumber: `REP-${sessionCode}`,
+      versionNumber: 1,
+      ruleStandard: 'OIML R 76-1:2006',
+      ruleVersion: '2006',
+      issuedAt: session.finalizedAt || new Date().toISOString(),
+      workflowStatusAtIssue: session.workflowStatus || 'FINALIZED',
+      evaluationResult: session.overallEvaluationResult || session.overallVerdict || 'COMPLIANT',
+      instrument: {
+        id: session.instrumentId,
+        code: session.instrumentId,
+        model: session.instrumentModel,
+        manufacturer: session.manufacturer,
+        serialNumber: session.serialNumber,
+        accuracyClass: session.accuracyClass,
+        maxCapacity: session.maxCapacity,
+        verificationInterval: session.verificationInterval,
+        scaleInterval: session.scaleInterval,
+      },
+      session: {
+        id: session.id,
+        sessionCode: sessionCode,
+        testContext: session.testContext || 'INITIAL_VERIFICATION',
+        verificationMode: session.verificationMode || 'INITIAL_VERIFICATION',
+        startedOn: session.startedOn,
+        completedOn: session.completedOn || new Date().toISOString(),
+      },
+      workflow: {
+        testingOfficer: session.assignedOfficer || 'Metrology Officer',
+        technicalReviewer: session.reviewer || session.reviewedBy || 'Technical Reviewer',
+        approvingOfficer: session.approver || session.approvedBy || session.labDirector || 'Laboratory Director',
+        finalizedBy: session.finalizedBy || session.approver,
+        submittedAt: session.submittedAt,
+        reviewedAt: session.reviewedAt,
+        approvedAt: session.approvedAt,
+        finalizedAt: session.finalizedAt || new Date().toISOString(),
+        workflowHistory: session.workflowHistory || [],
+      },
+      observations: {
+        weighing: session.weighingObservations || [],
+        repeatability: session.repeatabilityObservations || [],
+        eccentricity: session.eccentricityObservations || [],
+        discrimination: session.discriminationObservations || [],
+        zeroSetting: session.zeroSettingObservations || [],
+        tare: session.tareObservations || [],
+        environmentalConditions: session.environmentalConditions || {},
+      },
+      evaluation: {
+        overallVerdict: session.overallVerdict || 'COMPLIANT',
+        overallEvaluationResult: session.overallEvaluationResult || 'COMPLIANT',
+        progress: session.progress || 100,
+      },
+    };
+  },
+
+  /**
+   * Generate & persist an immutable final report snapshot upon session finalization
+   */
+  async generateFinalReportSnapshot(session: TestSession): Promise<Report> {
+    const snapshot = this.createSnapshotData(session);
+    const reportNumber = snapshot.reportNumber;
+    const certificateId = `CERT-IN-2026-${session.id.substring(0, 4).toUpperCase()}`;
+
+    let reportDbId = `REP-${session.id}`;
+
+    if (isSupabaseConfigured() && supabase) {
+      // Idempotency check: prevent duplicate Version 1 creation
+      const { data: existing } = await supabase
+        .from('reports')
+        .select('*, test_sessions(*, instruments(*))')
+        .or(`session_id.eq.${session.id},report_number.eq.${reportNumber}`)
+        .maybeSingle();
+
+      if (existing) {
+        return this.mapRowToReport(existing);
+      }
+
+      const { data, error } = await supabase
+        .from('reports')
+        .insert({
+          report_number: reportNumber,
+          session_id: session.id,
+          version_number: 1,
+          status: 'FINALIZED',
+          evaluation_result: snapshot.evaluationResult === 'NON_COMPLIANT' ? 'NON_COMPLIANT' : 'COMPLIANT',
+          workflow_status_at_issue: 'FINALIZED',
+          rule_standard: 'OIML R 76-1:2006',
+          rule_version: '2006',
+          snapshot_data: snapshot,
+          finalized_at: new Date().toISOString(),
+        })
+        .select()
+        .single();
+
+      if (error) {
+        throw new Error(`Failed to save finalized report to Supabase DB: ${error.message}`);
+      }
+
+      reportDbId = data.id;
+
+      // Also record Version 1 record in report_versions
+      try {
+        await supabase.from('report_versions').insert({
+          report_id: data.id,
+          version_number: 1,
+          snapshot_data: snapshot,
+          status: 'FINAL',
+        });
+      } catch (_verErr) {}
+    }
+
+    const finalReport: Report = {
+      id: reportDbId,
+      reportNumber,
+      certificateId,
+      testSessionId: session.id,
+      instrumentId: session.instrumentId,
+      instrumentModel: session.instrumentModel,
+      manufacturer: session.manufacturer,
+      accuracyClass: session.accuracyClass,
+      issueDate: new Date().toISOString().split('T')[0],
+      status: 'Finalized',
+      testingOfficer: snapshot.workflow.testingOfficer,
+      technicalReviewer: snapshot.workflow.technicalReviewer,
+      labDirector: snapshot.workflow.approvingOfficer,
+      verdict: snapshot.evaluation.overallVerdict === 'NON_COMPLIANT' ? 'Non-Compliant' : 'Compliant',
+      versionNumber: 1,
+      snapshotData: snapshot,
+    };
+
+    // Log Audit Event
+    try {
+      await auditService.logAuditEvent({
+        sessionId: session.id,
+        action: 'REPORT_FINALIZED',
+        entityType: 'report',
+        entityId: finalReport.id,
+        details: {
+          description: `Finalized OIML R 76 Test Evaluation Report ${reportNumber} (Version 1)`,
+          reportNumber,
+          versionNumber: 1,
+        },
+      });
+    } catch (_auditErr) {}
+
+    return finalReport;
+  },
+  /**
    * Get all reports
    */
   async getReports(): Promise<Report[]> {

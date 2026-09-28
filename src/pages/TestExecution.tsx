@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import {
   ArrowLeft,
   Scale,
@@ -15,10 +15,15 @@ import {
   Check,
   ShieldCheck,
   Award,
+  RefreshCw,
+  Eye,
 } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { Badge } from '../components/common/Badge';
 import { getTestSessionsStore, updateTestSession, addAuditLog, getReportsStore, getInstrumentsStore } from '../mock/store';
 import { authService } from '../services/authService';
+import { supabase, isSupabaseConfigured } from '../lib/supabase';
+import { testObservationService } from '../services/testObservationService';
 import {
   testSessionService,
   canEditTestSession,
@@ -65,6 +70,13 @@ import { TareWizard } from '../components/test/TareWizard';
 import { EvaluationTestPlanView } from '../components/test/EvaluationTestPlanView';
 import { StaticTemperatureWizard } from '../components/test/StaticTemperatureWizard';
 import { DisturbanceModulesView } from '../components/test/DisturbanceModulesView';
+import { OIMLWeighingSheet } from '../components/test/OIMLWeighingSheet';
+import { OIMLEccentricitySheet } from '../components/test/OIMLEccentricitySheet';
+import { OIMLRepeatabilitySheet } from '../components/test/OIMLRepeatabilitySheet';
+import { OIMLDiscriminationSheet } from '../components/test/OIMLDiscriminationSheet';
+import { OIMLZeroSheet } from '../components/test/OIMLZeroSheet';
+import { OIMLTareSheet } from '../components/test/OIMLTareSheet';
+import { OIMLTemperatureSheet } from '../components/test/OIMLTemperatureSheet';
 import { useToast } from '../components/common/Toast';
 
 const parseVerificationInterval = (intervalStr?: string): { eVal: number; eUnit: MassUnit } => {
@@ -76,6 +88,7 @@ const parseVerificationInterval = (intervalStr?: string): { eVal: number; eUnit:
 };
 
 export const TestExecution: React.FC = () => {
+  const { t } = useTranslation();
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { showToast } = useToast();
@@ -83,6 +96,7 @@ export const TestExecution: React.FC = () => {
   const sessions = getTestSessionsStore();
   const initialSession = sessions.find((s) => s.id === id) || sessions[0];
   const [session, setSession] = useState(initialSession);
+  const currentInstrument = getInstrumentsStore().find((i) => i.id === session.instrumentId) || (session as any).instrument;
 
   // Active Role state from Database Auth Profile
   const [activeRole, setActiveRole] = useState<UserRole>('TESTING_OFFICER');
@@ -99,9 +113,15 @@ export const TestExecution: React.FC = () => {
       }
 
       if (id) {
-        const latest = testSessionService.getLatestSessionState(id);
-        if (isMounted && latest) {
-          setSession(latest);
+        try {
+          const latest = await testSessionService.getSessionByIdAsync(id);
+          if (isMounted && latest) {
+            setSession(latest);
+          }
+        } catch (err: any) {
+          console.warn('Async session fetch fallback:', err.message);
+          const fallback = testSessionService.getLatestSessionState(id);
+          if (isMounted && fallback) setSession(fallback);
         }
       }
     };
@@ -122,12 +142,208 @@ export const TestExecution: React.FC = () => {
     };
   }, [id]);
 
-  const [activeTab, setActiveTab] = useState<'plan' | 'zerosetting' | 'tare' | 'eccentricity' | 'weighing' | 'repeatability' | 'discrimination' | 'statictemp' | 'disturbance' | 'review'>('plan');
+  const [searchParams] = useSearchParams();
+  const validTabs = ['plan', 'zerosetting', 'tare', 'eccentricity', 'weighing', 'repeatability', 'discrimination', 'statictemp', 'disturbance', 'review'];
+  const initialTab = searchParams.get('tab');
+  const [activeTab, setActiveTab] = useState<
+    'plan' | 'zerosetting' | 'tare' | 'eccentricity' | 'weighing' | 'repeatability' | 'discrimination' | 'statictemp' | 'disturbance' | 'review'
+  >(validTabs.includes(initialTab || '') ? (initialTab as any) : 'plan');
+
+  useEffect(() => {
+    const tabParam = searchParams.get('tab');
+    if (tabParam && validTabs.includes(tabParam)) {
+      setActiveTab(tabParam as any);
+    }
+  }, [searchParams]);
+
+  // Sheet Handlers for Digital OIML Report Sheets
+  const handleSaveWeighingObservationObj = async (newObs: WeighingTestObservation) => {
+    let supabaseSaveFailed = false;
+    if (isSupabaseConfigured() && session.id) {
+      try {
+        const stId = await testObservationService.getOrCreateSessionTest(session.id, 'ACCURACY');
+        if (stId) {
+          await testObservationService.saveWeighingObservation(stId, newObs);
+        }
+      } catch (err: any) {
+        console.error('Failed to save weighing observation to Supabase:', err);
+        supabaseSaveFailed = true;
+      }
+    }
+
+    const filteredObs = (session.weighingObservations || []).filter(
+      (o) => o.id !== newObs.id && (Math.abs(o.load - newObs.load) > 1e-6 || o.direction !== newObs.direction)
+    );
+    const updatedObs = [...filteredObs, newObs].sort((a, b) => a.load - b.load);
+
+    const updatedSession = {
+      ...session,
+      weighingObservations: updatedObs,
+    };
+
+    const progressResult = calculateTestProgress(updatedSession);
+    updatedSession.progress = progressResult.percentage;
+
+    setSession(updatedSession);
+    updateTestSession(updatedSession);
+    testSessionService.saveSession(updatedSession);
+
+    if (supabaseSaveFailed) {
+      showToast('Not saved. Retry.', 'Failed to save weighing observation to database.', 'error');
+    } else {
+      showToast('Observation Saved', `Reference load ${newObs.load} kg observation saved to official report sheet.`, 'success');
+    }
+  };
+
+  const handleSaveEccentricityObservationObj = async (newObs: EccentricityTestObservation) => {
+    let supabaseSaveFailed = false;
+    if (isSupabaseConfigured() && session.id) {
+      try {
+        const stId = await testObservationService.getOrCreateSessionTest(session.id, 'ECCENTRICITY');
+        if (stId) {
+          await testObservationService.saveEccentricityObservation(stId, newObs);
+        }
+      } catch (err: any) {
+        console.error('Failed to save eccentricity observation to Supabase:', err);
+        supabaseSaveFailed = true;
+      }
+    }
+
+    const filtered = (session.eccentricityObservations || []).filter((o) => o.position !== newObs.position);
+    const updatedEcc = [...filtered, newObs].sort((a, b) => a.position - b.position);
+
+    const updatedSession = {
+      ...session,
+      eccentricityObservations: updatedEcc,
+    };
+
+    const progressResult = calculateTestProgress(updatedSession);
+    updatedSession.progress = progressResult.percentage;
+
+    setSession(updatedSession);
+    updateTestSession(updatedSession);
+    testSessionService.saveSession(updatedSession);
+
+    if (supabaseSaveFailed) {
+      showToast('Not saved. Retry.', 'Failed to save eccentricity observation to database.', 'error');
+    } else {
+      showToast('Position Reading Saved', `Position ${newObs.position} observation saved to eccentricity report sheet.`, 'success');
+    }
+  };
+
+  const handleDeleteEccentricityObservation = (posId: number) => {
+    const updatedEcc = (session.eccentricityObservations || []).filter((o) => o.position !== posId);
+    const updatedSession = { ...session, eccentricityObservations: updatedEcc };
+    setSession(updatedSession);
+    updateTestSession(updatedSession);
+    testSessionService.saveSession(updatedSession);
+    showToast('Position Removed', `Position ${posId} observation cleared.`, 'info');
+  };
+
+  const handleSaveRepeatabilityObservationObj = async (newObs: any) => {
+    let supabaseSaveFailed = false;
+    if (isSupabaseConfigured() && session.id) {
+      try {
+        const stId = await testObservationService.getOrCreateSessionTest(session.id, 'REPEATABILITY');
+        if (stId) {
+          await testObservationService.saveRepeatabilityObservation(stId, newObs);
+        }
+      } catch (err: any) {
+        console.error('Failed to save repeatability observation to Supabase:', err);
+        supabaseSaveFailed = true;
+      }
+    }
+
+    const filtered = (session.repeatabilityObservations || []).filter(
+      (o: any) => o.id !== newObs.id && o.runNumber !== newObs.runNumber
+    );
+    const updatedRep = [...filtered, newObs].sort((a: any, b: any) => a.runNumber - b.runNumber);
+
+    const updatedSession = {
+      ...session,
+      repeatabilityObservations: updatedRep,
+    };
+
+    const progressResult = calculateTestProgress(updatedSession);
+    updatedSession.progress = progressResult.percentage;
+
+    setSession(updatedSession);
+    updateTestSession(updatedSession);
+    testSessionService.saveSession(updatedSession);
+
+    if (supabaseSaveFailed) {
+      showToast('Not saved. Retry.', 'Failed to save repeatability observation to database.', 'error');
+    } else {
+      showToast('Repeatability Run Saved', `Run ${newObs.runNumber} recorded on report sheet.`, 'success');
+    }
+  };
+
+  const handleDeleteRepeatabilityObservation = (runId: string) => {
+    const updatedRep = (session.repeatabilityObservations || []).filter(
+      (o: any) => o.id !== runId && o.runNumber?.toString() !== runId
+    );
+    const updatedSession = { ...session, repeatabilityObservations: updatedRep };
+    setSession(updatedSession);
+    updateTestSession(updatedSession);
+    testSessionService.saveSession(updatedSession);
+    showToast('Run Removed', 'Repeatability observation removed.', 'info');
+  };
+
+  const handleSaveTemperatureObservationObj = async (newObs: any) => {
+    let supabaseSaveFailed = false;
+    if (isSupabaseConfigured() && session.id) {
+      try {
+        const stId = await testObservationService.getOrCreateSessionTest(session.id, 'STATIC_TEMP');
+        if (stId) {
+          await testObservationService.saveStaticTemperatureObservation(stId, newObs);
+        }
+      } catch (err: any) {
+        console.error('Failed to save static temperature observation to Supabase:', err);
+        supabaseSaveFailed = true;
+      }
+    }
+
+    const filtered = (session.staticTemperatureObservations || []).filter(
+      (o: any) => o.id !== newObs.id && o.stepIndex !== newObs.stepIndex
+    );
+    const updatedTemp = [...filtered, newObs].sort((a: any, b: any) => (a.stepIndex || 0) - (b.stepIndex || 0));
+
+    const updatedSession = {
+      ...session,
+      staticTemperatureObservations: updatedTemp,
+    };
+
+    const progressResult = calculateTestProgress(updatedSession);
+    updatedSession.progress = progressResult.percentage;
+
+    setSession(updatedSession);
+    updateTestSession(updatedSession);
+    testSessionService.saveSession(updatedSession);
+
+    if (supabaseSaveFailed) {
+      showToast('Not saved. Retry.', 'Failed to save temperature observation to database.', 'error');
+    } else {
+      showToast('Temperature Reading Saved', `Temperature ${newObs.temperature}°C observation recorded.`, 'success');
+    }
+  };
 
   // Zero-Setting Test State
   const zeroSettingType = session.zeroSettingType || 'SEMI_AUTOMATIC';
 
-  const handleSaveZeroSettingObservation = (newObs: ZeroSettingTestObservation) => {
+  const handleSaveZeroSettingObservation = async (newObs: ZeroSettingTestObservation) => {
+    let supabaseSaveFailed = false;
+    if (isSupabaseConfigured() && session.id) {
+      try {
+        const stId = await testObservationService.getOrCreateSessionTest(session.id, 'ZERO_SETTING');
+        if (stId) {
+          await testObservationService.saveZeroSettingObservation(stId, newObs);
+        }
+      } catch (err: any) {
+        console.error('Failed to save zero-setting observation to Supabase:', err);
+        supabaseSaveFailed = true;
+      }
+    }
+
     const updatedSession = {
       ...session,
       zeroSettingType,
@@ -139,6 +355,7 @@ export const TestExecution: React.FC = () => {
 
     setSession(updatedSession);
     updateTestSession(updatedSession);
+    testSessionService.saveSession(updatedSession);
 
     // Append Audit Log (Section 21)
     addAuditLog({
@@ -151,15 +368,32 @@ export const TestExecution: React.FC = () => {
       instrumentOrSessionId: session.id,
     });
 
-    showToast(
-      'Zero Setting Recorded',
-      `E0: ${newObs.calculatedZeroError > 0 ? '+' : ''}${newObs.calculatedZeroError} ${newObs.eUnit} (${newObs.passed ? 'Within Limit' : 'Exceeds Limit'})`,
-      newObs.passed ? 'success' : 'warning'
-    );
+    if (supabaseSaveFailed) {
+      showToast('Not saved. Retry.', 'Failed to save zero setting observation to database.', 'error');
+    } else {
+      showToast(
+        'Zero Setting Recorded',
+        `E0: ${newObs.calculatedZeroError > 0 ? '+' : ''}${newObs.calculatedZeroError} ${newObs.eUnit} (${newObs.passed ? 'Within Limit' : 'Exceeds Limit'})`,
+        newObs.passed ? 'success' : 'warning'
+      );
+    }
   };
 
   // Tare Test Handlers
-  const handleSaveTareSetting = (settingObs: TareSettingObservation) => {
+  const handleSaveTareSetting = async (settingObs: TareSettingObservation) => {
+    let supabaseSaveFailed = false;
+    if (isSupabaseConfigured() && session.id) {
+      try {
+        const stId = await testObservationService.getOrCreateSessionTest(session.id, 'TARE');
+        if (stId) {
+          await testObservationService.saveTareSettingObservation(stId, settingObs);
+        }
+      } catch (err: any) {
+        console.error('Failed to save tare setting observation to Supabase:', err);
+        supabaseSaveFailed = true;
+      }
+    }
+
     const prevTareSession: TareTestSession = session.tareTestSession || {
       tareType: 'SUBTRACTIVE',
       maximumTareEffect: 10,
@@ -190,6 +424,7 @@ export const TestExecution: React.FC = () => {
 
     setSession(updatedSession);
     updateTestSession(updatedSession);
+    testSessionService.saveSession(updatedSession);
 
     addAuditLog({
       id: `LOG-${Date.now()}`,
@@ -201,14 +436,31 @@ export const TestExecution: React.FC = () => {
       instrumentOrSessionId: session.id,
     });
 
-    showToast(
-      'Tare-Setting Saved',
-      `Applied Tare: ${settingObs.appliedTareLoad} ${settingObs.tareLoadUnit} (ET: ${settingObs.calculatedTareZeroError > 0 ? '+' : ''}${settingObs.calculatedTareZeroError} g)`,
-      settingObs.passed ? 'success' : 'warning'
-    );
+    if (supabaseSaveFailed) {
+      showToast('Not saved. Retry.', 'Failed to save tare setting to database.', 'error');
+    } else {
+      showToast(
+        'Tare-Setting Saved',
+        `Applied Tare: ${settingObs.appliedTareLoad} ${settingObs.tareLoadUnit} (ET: ${settingObs.calculatedTareZeroError > 0 ? '+' : ''}${settingObs.calculatedTareZeroError} g)`,
+        settingObs.passed ? 'success' : 'warning'
+      );
+    }
   };
 
-  const handleSaveTareNetObservation = (netObs: TareNetWeighingObservation) => {
+  const handleSaveTareNetObservation = async (netObs: TareNetWeighingObservation) => {
+    let supabaseSaveFailed = false;
+    if (isSupabaseConfigured() && session.id) {
+      try {
+        const stId = await testObservationService.getOrCreateSessionTest(session.id, 'TARE');
+        if (stId) {
+          await testObservationService.saveTareNetWeighingObservation(stId, netObs);
+        }
+      } catch (err: any) {
+        console.error('Failed to save tare net observation to Supabase:', err);
+        supabaseSaveFailed = true;
+      }
+    }
+
     const prevTareSession: TareTestSession = session.tareTestSession || {
       tareType: 'SUBTRACTIVE',
       maximumTareEffect: 10,
@@ -246,6 +498,7 @@ export const TestExecution: React.FC = () => {
 
     setSession(updatedSession);
     updateTestSession(updatedSession);
+    testSessionService.saveSession(updatedSession);
 
     addAuditLog({
       id: `LOG-${Date.now()}`,
@@ -257,11 +510,15 @@ export const TestExecution: React.FC = () => {
       instrumentOrSessionId: session.id,
     });
 
-    showToast(
-      'Net Observation Saved',
-      `Point ${netObs.stepIndex} (${netObs.referenceNetLoad} kg NET): Net Error ${netObs.netErrorFormatted}`,
-      netObs.passed ? 'success' : 'warning'
-    );
+    if (supabaseSaveFailed) {
+      showToast('Not saved. Retry.', 'Failed to save net observation to database.', 'error');
+    } else {
+      showToast(
+        'Net Observation Saved',
+        `Point ${netObs.stepIndex} (${netObs.referenceNetLoad} kg NET): Net Error ${netObs.netErrorFormatted}`,
+        netObs.passed ? 'success' : 'warning'
+      );
+    }
   };
 
   const handleCompleteTareTest = (overallResult: string) => {
@@ -284,6 +541,7 @@ export const TestExecution: React.FC = () => {
 
     setSession(updatedSession);
     updateTestSession(updatedSession);
+    testSessionService.saveSession(updatedSession);
 
     addAuditLog({
       id: `LOG-${Date.now()}`,
@@ -323,7 +581,20 @@ export const TestExecution: React.FC = () => {
     return firstIncomplete || ids[0];
   };
 
-  const handleSaveDiscriminationObservation = (newObs: DiscriminationTestObservation) => {
+  const handleSaveDiscriminationObservation = async (newObs: DiscriminationTestObservation) => {
+    let supabaseSaveFailed = false;
+    if (isSupabaseConfigured() && session.id) {
+      try {
+        const stId = await testObservationService.getOrCreateSessionTest(session.id, 'DISCRIMINATION');
+        if (stId) {
+          await testObservationService.saveDiscriminationObservation(stId, newObs);
+        }
+      } catch (err: any) {
+        console.error('Failed to save discrimination observation to Supabase:', err);
+        supabaseSaveFailed = true;
+      }
+    }
+
     const filtered = (session.discriminationObservations || []).filter((o) => o.testPointId !== newObs.testPointId);
     const updatedDisc = [...filtered, newObs];
 
@@ -337,6 +608,28 @@ export const TestExecution: React.FC = () => {
 
     setSession(updatedSession);
     updateTestSession(updatedSession);
+    testSessionService.saveSession(updatedSession);
+
+    // Append Audit Log
+    addAuditLog({
+      id: `LOG-${Date.now()}`,
+      timestamp: new Date().toISOString().replace('T', ' ').substring(0, 19),
+      user: activeRole === 'Testing Officer' ? 'Dr. Ananya Rao' : 'V. Verma',
+      role: activeRole,
+      action: 'Discrimination Point Completed',
+      details: `Discrimination Test — ${newObs.testPointLabel} Completed (${newObs.resultStatus === 'CONFIRMED' ? 'Response Confirmed' : 'Not Observed'})`,
+      instrumentOrSessionId: session.id,
+    });
+
+    if (supabaseSaveFailed) {
+      showToast('Not saved. Retry.', 'Failed to save discrimination observation to database.', 'error');
+    } else {
+      showToast(
+        'Test Point Recorded',
+        `${newObs.testPointLabel}: ${newObs.resultStatus === 'CONFIRMED' ? '✓ Response Confirmed' : '✕ Not Observed'}`,
+        newObs.passed ? 'success' : 'warning'
+      );
+    }
 
     // Append Audit Log
     addAuditLog({
@@ -446,10 +739,7 @@ export const TestExecution: React.FC = () => {
     const progressResult = calculateTestProgress(updatedSession);
     updatedSession.progress = progressResult.percentage;
 
-    setSession(updatedSession);
-    updateTestSession(updatedSession);
-
-    showToast('Reading Saved', `Position ${eccPosition} (${posConfig.label}): ${readingVal} kg`, 'success');
+    handleSaveEccentricityObservationObj(newEcc);
 
     // Auto-advance focus to next position
     const nextPos = getNextIncompletePosition(eccPosition, updatedEcc);
@@ -466,7 +756,7 @@ export const TestExecution: React.FC = () => {
   };
 
   // SAVE WEIGHING ACCURACY OBSERVATION WITH FULL METROLOGICAL VALIDATION
-  const handleSaveWeighingObservation = (e: React.FormEvent) => {
+  const handleSaveWeighingObservation = async (e: React.FormEvent) => {
     e.preventDefault();
 
     if (!weighingRefLoadInput || weighingRefLoadInput.trim() === '' || isNaN(Number(weighingRefLoadInput))) {
@@ -537,17 +827,7 @@ export const TestExecution: React.FC = () => {
       notes: weighingNotesInput,
     };
 
-    const filteredObs = session.weighingObservations.filter((o) => Math.abs(o.load - refLoad) > 1e-6 || o.direction !== weighingDirection);
-    const updatedObs = [...filteredObs, newObs].sort((a, b) => a.load - b.load);
-
-    const updatedSession = {
-      ...session,
-      weighingObservations: updatedObs,
-    };
-
-    setSession(updatedSession);
-    updateTestSession(updatedSession);
-    showToast('Observation Saved', 'Accuracy observation saved.', 'success');
+    await handleSaveWeighingObservationObj(newObs);
   };
 
   const handleEditWeighingObservation = (obs: WeighingTestObservation) => {
@@ -587,88 +867,175 @@ export const TestExecution: React.FC = () => {
     showToast('Draft Saved', 'Saved just now to local storage.', 'info');
   };
 
-  // Role Action 1: Testing Officer Submits for Review
-  const handleSubmitForReview = () => {
+  // Role Action 1: Testing Officer Submits for Review (IN_PROGRESS -> TESTING_COMPLETE)
+  const handleSubmitForReview = async () => {
     const readyCheck = isSessionReadyForReview(session);
     if (!readyCheck.isReady) {
-      showToast('Cannot Submit Evaluation', readyCheck.blockingReason || 'Complete all required tests before submitting this evaluation.', 'warning');
+      showToast('Cannot Submit Evaluation', readyCheck.blockingReason || 'Complete all required tests before submitting for technical review.', 'warning');
       return;
     }
 
-    const updated = testSessionService.updateWorkflowStatus(session.id, 'UNDER_REVIEW', {
-      user: activeRole === 'Testing Officer' ? 'Dr. Ananya Rao' : activeRole === 'Technical Reviewer' ? 'Vikramaditya Verma' : 'Dr. K. S. Murthy',
-      role: activeRole,
-      comments: 'All required test observations completed and verified. Submitted for senior technical review.',
-    });
-    if (updated) {
-      setSession(updated);
-      showToast('Submitted for Review', 'Test session submitted for senior technical review.', 'success');
-      setActiveTab('review');
+    try {
+      const user = await authService.getCurrentUser();
+      const updated = await testSessionService.updateWorkflowStatus(session.id, 'TESTING_COMPLETE', {
+        user: user?.name || user?.email || 'Testing Officer',
+        role: user?.role || activeRole,
+        comments: 'All required test observations completed and verified. Submitted for senior technical review.',
+      });
+      if (updated) {
+        setSession(updated);
+        showToast('Submitted for Review', 'Testing complete. Session submitted for senior technical review.', 'success');
+        setActiveTab('review');
+      }
+    } catch (err: any) {
+      showToast('Workflow Update Failed', err.message || 'Failed to submit test session for review.', 'error');
     }
   };
 
-  // Role Action 2: Technical Reviewer Requests Changes
-  const handleRequestChanges = () => {
+  // Testing Officer Resumes Testing after Changes Requested (CHANGES_REQUESTED -> IN_PROGRESS)
+  const handleResumeTesting = async () => {
+    try {
+      const user = await authService.getCurrentUser();
+      const updated = await testSessionService.updateWorkflowStatus(session.id, 'IN_PROGRESS', {
+        user: user?.name || user?.email || 'Testing Officer',
+        role: user?.role || activeRole,
+        comments: 'Testing officer resumed testing to make requested corrections.',
+      });
+      if (updated) {
+        setSession(updated);
+        showToast('Testing Resumed', 'Session status reset to In Progress for corrections.', 'info');
+        setActiveTab('weighing');
+      }
+    } catch (err: any) {
+      showToast('Workflow Update Failed', err.message || 'Failed to resume testing.', 'error');
+    }
+  };
+
+  // Role Action 2: Technical Reviewer Claims Review (TESTING_COMPLETE -> UNDER_REVIEW)
+  const handleClaimReview = async () => {
+    try {
+      const user = await authService.getCurrentUser();
+      const updated = await testSessionService.updateWorkflowStatus(session.id, 'UNDER_REVIEW', {
+        user: user?.name || user?.email || 'Technical Reviewer',
+        role: user?.role || activeRole,
+        comments: 'Technical reviewer claimed session for audit.',
+      });
+      if (updated) {
+        setSession(updated);
+        showToast('Review Started', 'Technical review claim recorded.', 'info');
+      }
+    } catch (err: any) {
+      showToast('Workflow Update Failed', err.message || 'Failed to claim review.', 'error');
+    }
+  };
+
+  // Role Action 3: Technical Reviewer Requests Changes (UNDER_REVIEW -> CHANGES_REQUESTED)
+  const handleRequestChanges = async () => {
     if (!reviewerCommentInput.trim()) {
       showToast('Reason Required', 'Please enter a comment explaining the requested changes.', 'warning');
       return;
     }
-    const updated = testSessionService.updateWorkflowStatus(session.id, 'CHANGES_REQUESTED', {
-      user: 'Vikramaditya Verma',
-      role: 'Technical Reviewer',
-      reason: reviewerCommentInput,
-      comments: reviewerCommentInput,
-    });
-    if (updated) {
-      setSession(updated);
-      showToast('Changes Requested', 'Session returned to Testing Officer for corrections.', 'info');
-      setReviewerCommentInput('');
-      setShowRequestChangesBox(false);
-    }
-  };
-
-  // Role Action 3: Technical Reviewer Approves
-  const handleApproveReview = () => {
-    const updated = testSessionService.updateWorkflowStatus(session.id, 'TECHNICALLY_APPROVED', {
-      user: 'Vikramaditya Verma',
-      role: 'Technical Reviewer',
-      comments: reviewerCommentInput || 'Technical evaluation audited and approved.',
-    });
-    if (updated) {
-      setSession(updated);
-      showToast('Technical Review Approved', 'Technical review approved. Awaiting Laboratory Director sign-off.', 'success');
-      setReviewerCommentInput('');
-    }
-  };
-
-  // Role Action 4: Director Approves Evaluation
-  const handleDirectorApprove = () => {
-    const updated = testSessionService.updateWorkflowStatus(session.id, 'APPROVED', {
-      user: 'Dr. K. S. Murthy',
-      role: 'Approving Officer / Lab Director',
-      comments: 'Legal metrology evaluation approved.',
-    });
-    if (updated) {
-      setSession(updated);
-      showToast('Evaluation Approved', 'Type evaluation approved by Laboratory Director.', 'success');
-    }
-  };
-
-  // Role Action 5: Director Finalizes & Signs Certificate
-  const handleFinalizeCertificate = () => {
-    const updated = testSessionService.updateWorkflowStatus(session.id, 'FINALIZED', {
-      user: 'Dr. K. S. Murthy',
-      role: 'Approving Officer / Lab Director',
-      comments: 'Official Type Evaluation Certificate Issued.',
-    });
-    if (updated) {
-      setSession(updated);
-      showToast('Report Finalized', 'Evaluation finalized. Record is now read-only.', 'success');
-      const reports = getReportsStore();
-      const match = reports.find((r) => r.testSessionId === session.id);
-      if (match) {
-        navigate(`/reports/${match.id}`);
+    try {
+      const user = await authService.getCurrentUser();
+      const updated = await testSessionService.updateWorkflowStatus(session.id, 'CHANGES_REQUESTED', {
+        user: user?.name || user?.email || 'Technical Reviewer',
+        role: user?.role || activeRole,
+        reason: reviewerCommentInput,
+        comments: reviewerCommentInput,
+      });
+      if (updated) {
+        setSession(updated);
+        showToast('Changes Requested', 'Session returned to Testing Officer for corrections.', 'info');
+        setReviewerCommentInput('');
+        setShowRequestChangesBox(false);
       }
+    } catch (err: any) {
+      showToast('Workflow Update Failed', err.message || 'Failed to request changes.', 'error');
+    }
+  };
+
+  // Role Action 4: Technical Reviewer Approves (UNDER_REVIEW -> TECHNICALLY_APPROVED)
+  const handleApproveReview = async () => {
+    try {
+      const user = await authService.getCurrentUser();
+      const updated = await testSessionService.updateWorkflowStatus(session.id, 'TECHNICALLY_APPROVED', {
+        user: user?.name || user?.email || 'Technical Reviewer',
+        role: user?.role || activeRole,
+        comments: reviewerCommentInput || 'Technical evaluation audited and approved.',
+      });
+      if (updated) {
+        setSession(updated);
+        showToast('Technical Review Approved', 'Technical review approved. Awaiting Laboratory Director sign-off.', 'success');
+        setReviewerCommentInput('');
+      }
+    } catch (err: any) {
+      showToast('Workflow Update Failed', err.message || 'Failed to approve technical review.', 'error');
+    }
+  };
+
+  // Role Action 5: Director Approves Evaluation (TECHNICALLY_APPROVED -> APPROVED)
+  const handleDirectorApprove = async () => {
+    try {
+      const user = await authService.getCurrentUser();
+      const updated = await testSessionService.updateWorkflowStatus(session.id, 'APPROVED', {
+        user: user?.name || user?.email || 'Laboratory Director',
+        role: user?.role || activeRole,
+        comments: reviewerCommentInput || 'Legal metrology type evaluation approved.',
+      });
+      if (updated) {
+        setSession(updated);
+        showToast('Evaluation Approved', 'Type evaluation approved by Laboratory Director.', 'success');
+        setReviewerCommentInput('');
+      }
+    } catch (err: any) {
+      showToast('Workflow Update Failed', err.message || 'Failed to approve evaluation.', 'error');
+    }
+  };
+
+  // Director Requests Changes (TECHNICALLY_APPROVED -> CHANGES_REQUESTED)
+  const handleDirectorRequestChanges = async () => {
+    if (!reviewerCommentInput.trim()) {
+      showToast('Reason Required', 'Please enter a comment explaining the requested changes.', 'warning');
+      return;
+    }
+    try {
+      const user = await authService.getCurrentUser();
+      const updated = await testSessionService.updateWorkflowStatus(session.id, 'CHANGES_REQUESTED', {
+        user: user?.name || user?.email || 'Laboratory Director',
+        role: user?.role || activeRole,
+        reason: reviewerCommentInput,
+        comments: reviewerCommentInput,
+      });
+      if (updated) {
+        setSession(updated);
+        showToast('Changes Requested', 'Session returned to Testing Officer for corrections.', 'info');
+        setReviewerCommentInput('');
+      }
+    } catch (err: any) {
+      showToast('Workflow Update Failed', err.message || 'Failed to request changes.', 'error');
+    }
+  };
+
+  // Role Action 6: Director Finalizes & Signs Certificate (APPROVED -> FINALIZED)
+  const handleFinalizeCertificate = async () => {
+    try {
+      const user = await authService.getCurrentUser();
+      const updated = await testSessionService.updateWorkflowStatus(session.id, 'FINALIZED', {
+        user: user?.name || user?.email || 'Laboratory Director',
+        role: user?.role || activeRole,
+        comments: 'Official Type Evaluation Certificate Issued.',
+      });
+      if (updated) {
+        setSession(updated);
+        showToast('Report Finalized', 'Evaluation finalized. Record is now read-only.', 'success');
+        const reports = getReportsStore();
+        const match = reports.find((r) => r.testSessionId === session.id);
+        if (match) {
+          navigate(`/reports/${match.id}`);
+        }
+      }
+    } catch (err: any) {
+      showToast('Workflow Update Failed', err.message || 'Failed to finalize certificate.', 'error');
     }
   };
 
@@ -809,7 +1176,7 @@ export const TestExecution: React.FC = () => {
   return (
     <div className="space-y-6 max-w-7xl mx-auto pb-12">
       {/* Back button & Header Toolbar */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 no-print">
         <button
           onClick={() => navigate('/test-sessions')}
           className="flex items-center gap-2 text-xs font-semibold text-slate-500 hover:text-slate-900 transition-colors"
@@ -829,46 +1196,46 @@ export const TestExecution: React.FC = () => {
       </div>
 
       {/* TOP PERSISTENT TEST BANNER */}
-      <div className="bg-slate-900 text-white p-6 rounded-xl shadow-md space-y-4">
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-4 border-b border-slate-800">
+      <div className="bg-[#0B1F3A] text-white p-6 rounded-xl shadow-md space-y-4 no-print border border-[#C8A46B]/40">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-4 border-b border-slate-700">
           <div className="space-y-1">
             <div className="flex items-center gap-2">
-              <span className="font-mono text-xs font-bold text-teal-400">Test ID: {session.id}</span>
+              <span className="font-mono text-xs font-bold text-[#C8A46B]">Test ID: {session.id}</span>
               <Badge status={session.status} size="sm" />
             </div>
             <h2 className="text-xl font-extrabold text-white tracking-tight">
               Instrument: {session.instrumentModel}
             </h2>
-            <p className="text-xs text-slate-400">
-              Serial Number: <span className="font-mono text-slate-200 font-bold">{session.serialNumber}</span> • Manufacturer:{' '}
-              <span className="text-slate-200">{session.manufacturer}</span>
+            <p className="text-xs text-slate-300">
+              Serial Number: <span className="font-mono text-white font-bold">{session.serialNumber}</span> • Manufacturer:{' '}
+              <span className="text-white">{session.manufacturer}</span>
             </p>
           </div>
 
           <div className="flex flex-col items-end gap-1">
             <div className="text-right">
-              <span className="text-[10px] text-slate-400 uppercase font-bold block">Test Progress</span>
-              <span className="text-base font-extrabold text-teal-400">
+              <span className="text-[10px] text-slate-300 uppercase font-bold block">Test Progress</span>
+              <span className="text-base font-extrabold text-[#C8A46B]">
                 {completedCount} of {totalCount} tests completed ({calculatedProgressPercent}%)
               </span>
             </div>
             <div className="w-48 h-2 bg-slate-800 rounded-full overflow-hidden">
-              <div className="h-full bg-teal-500 rounded-full" style={{ width: `${calculatedProgressPercent}%` }} />
+              <div className="h-full bg-[#C8A46B] rounded-full" style={{ width: `${calculatedProgressPercent}%` }} />
             </div>
           </div>
         </div>
 
         {/* SIH DEMO QUICK ACTION HELPERS */}
-        <div className="flex flex-wrap items-center justify-between gap-2 p-2 bg-slate-950/80 rounded-lg border border-slate-800 text-xs">
-          <div className="flex items-center gap-2 text-slate-400 font-semibold text-[11px]">
-            <Award className="w-3.5 h-3.5 text-teal-400" />
+        <div className="flex flex-wrap items-center justify-between gap-2 p-2 bg-[#08162A] rounded-lg border border-slate-700 text-xs">
+          <div className="flex items-center gap-2 text-slate-300 font-semibold text-[11px]">
+            <Award className="w-3.5 h-3.5 text-[#C8A46B]" />
             <span>SIH Evaluator Toolbar:</span>
           </div>
           <div className="flex items-center gap-2">
             <button
               type="button"
               onClick={handlePreFillPassingDemoData}
-              className="px-2.5 py-1 bg-teal-700 hover:bg-teal-600 text-white font-bold text-[11px] rounded transition-colors flex items-center gap-1 cursor-pointer"
+              className="px-2.5 py-1 bg-[#C8A46B] hover:bg-[#B79055] text-[#08162A] font-extrabold text-[11px] rounded transition-colors flex items-center gap-1 cursor-pointer"
               title="Pre-fill realistic OIML compliant test observations across all test modules"
             >
               <span>⚡ Load Passing Demo Readings</span>
@@ -890,9 +1257,9 @@ export const TestExecution: React.FC = () => {
             onClick={() => setActiveTab('plan')}
             className={`px-3 py-1.5 rounded-lg font-bold transition-all shrink-0 cursor-pointer ${
               activeTab === 'plan'
-                ? 'bg-teal-600 text-white shadow-md ring-2 ring-teal-400'
+                ? 'bg-[#C8A46B] text-[#08162A] shadow-md ring-2 ring-[#C8A46B]'
                 : session.testPlanConfirmed
-                ? 'bg-emerald-950 text-emerald-300 border border-emerald-800'
+                ? 'bg-[#08162A] text-[#C8A46B] border border-[#C8A46B]/40'
                 : 'bg-slate-800 text-slate-300'
             }`}
           >
@@ -903,9 +1270,9 @@ export const TestExecution: React.FC = () => {
             onClick={() => setActiveTab('zerosetting')}
             className={`px-3 py-1.5 rounded-lg font-bold transition-all shrink-0 cursor-pointer ${
               activeTab === 'zerosetting'
-                ? 'bg-teal-600 text-white shadow-md ring-2 ring-teal-400'
+                ? 'bg-[#C8A46B] text-[#08162A] shadow-md ring-2 ring-[#C8A46B]'
                 : isZeroSettingCompleted
-                ? 'bg-emerald-950 text-emerald-300 border border-emerald-800'
+                ? 'bg-[#08162A] text-[#C8A46B] border border-[#C8A46B]/40'
                 : 'bg-slate-800 text-slate-300'
             }`}
           >
@@ -916,9 +1283,9 @@ export const TestExecution: React.FC = () => {
             onClick={() => setActiveTab('tare')}
             className={`px-3 py-1.5 rounded-lg font-bold transition-all shrink-0 cursor-pointer ${
               activeTab === 'tare'
-                ? 'bg-teal-600 text-white shadow-md ring-2 ring-teal-400'
+                ? 'bg-[#C8A46B] text-[#08162A] shadow-md ring-2 ring-[#C8A46B]'
                 : isTareCompleted
-                ? 'bg-emerald-950 text-emerald-300 border border-emerald-800'
+                ? 'bg-[#08162A] text-[#C8A46B] border border-[#C8A46B]/40'
                 : 'bg-slate-800 text-slate-300'
             }`}
           >
@@ -929,9 +1296,9 @@ export const TestExecution: React.FC = () => {
             onClick={() => setActiveTab('eccentricity')}
             className={`px-3 py-1.5 rounded-lg font-bold transition-all shrink-0 cursor-pointer ${
               activeTab === 'eccentricity'
-                ? 'bg-teal-600 text-white shadow-md ring-2 ring-teal-400'
+                ? 'bg-[#C8A46B] text-[#08162A] shadow-md ring-2 ring-[#C8A46B]'
                 : isEccCompleted
-                ? 'bg-emerald-950 text-emerald-300 border border-emerald-800'
+                ? 'bg-[#08162A] text-[#C8A46B] border border-[#C8A46B]/40'
                 : 'bg-slate-800 text-slate-300'
             }`}
           >
@@ -942,9 +1309,9 @@ export const TestExecution: React.FC = () => {
             onClick={() => setActiveTab('weighing')}
             className={`px-3 py-1.5 rounded-lg font-bold transition-all shrink-0 cursor-pointer ${
               activeTab === 'weighing'
-                ? 'bg-teal-600 text-white shadow-md ring-2 ring-teal-400'
+                ? 'bg-[#C8A46B] text-[#08162A] shadow-md ring-2 ring-[#C8A46B]'
                 : isWeighingCompleted
-                ? 'bg-emerald-950 text-emerald-300 border border-emerald-800'
+                ? 'bg-[#08162A] text-[#C8A46B] border border-[#C8A46B]/40'
                 : 'bg-slate-800 text-slate-300'
             }`}
           >
@@ -955,9 +1322,9 @@ export const TestExecution: React.FC = () => {
             onClick={() => setActiveTab('repeatability')}
             className={`px-3 py-1.5 rounded-lg font-bold transition-all shrink-0 cursor-pointer ${
               activeTab === 'repeatability'
-                ? 'bg-teal-600 text-white shadow-md ring-2 ring-teal-400'
+                ? 'bg-[#C8A46B] text-[#08162A] shadow-md ring-2 ring-[#C8A46B]'
                 : isRepeatabilityCompleted
-                ? 'bg-emerald-950 text-emerald-300 border border-emerald-800'
+                ? 'bg-[#08162A] text-[#C8A46B] border border-[#C8A46B]/40'
                 : 'bg-slate-800 text-slate-300'
             }`}
           >
@@ -968,9 +1335,9 @@ export const TestExecution: React.FC = () => {
             onClick={() => setActiveTab('discrimination')}
             className={`px-3 py-1.5 rounded-lg font-bold transition-all shrink-0 cursor-pointer ${
               activeTab === 'discrimination'
-                ? 'bg-teal-600 text-white shadow-md ring-2 ring-teal-400'
+                ? 'bg-[#C8A46B] text-[#08162A] shadow-md ring-2 ring-[#C8A46B]'
                 : isDiscriminationCompleted
-                ? 'bg-emerald-950 text-emerald-300 border border-emerald-800'
+                ? 'bg-[#08162A] text-[#C8A46B] border border-[#C8A46B]/40'
                 : 'bg-slate-800 text-slate-300'
             }`}
           >
@@ -981,9 +1348,9 @@ export const TestExecution: React.FC = () => {
             onClick={() => setActiveTab('statictemp')}
             className={`px-3 py-1.5 rounded-lg font-bold transition-all shrink-0 cursor-pointer ${
               activeTab === 'statictemp'
-                ? 'bg-teal-600 text-white shadow-md ring-2 ring-teal-400'
+                ? 'bg-[#C8A46B] text-[#08162A] shadow-md ring-2 ring-[#C8A46B]'
                 : (session.staticTemperatureObservations || []).length >= 5
-                ? 'bg-emerald-950 text-emerald-300 border border-emerald-800'
+                ? 'bg-[#08162A] text-[#C8A46B] border border-[#C8A46B]/40'
                 : 'bg-slate-800 text-slate-300'
             }`}
           >
@@ -994,7 +1361,7 @@ export const TestExecution: React.FC = () => {
             onClick={() => setActiveTab('disturbance')}
             className={`px-3 py-1.5 rounded-lg font-bold transition-all shrink-0 cursor-pointer ${
               activeTab === 'disturbance'
-                ? 'bg-teal-600 text-white shadow-md ring-2 ring-teal-400'
+                ? 'bg-[#C8A46B] text-[#08162A] shadow-md ring-2 ring-[#C8A46B]'
                 : 'bg-slate-800 text-slate-300'
             }`}
           >
@@ -1004,7 +1371,7 @@ export const TestExecution: React.FC = () => {
           <button
             onClick={() => setActiveTab('review')}
             className={`px-3 py-1.5 rounded-lg font-bold transition-all shrink-0 cursor-pointer ${
-              activeTab === 'review' ? 'bg-teal-600 text-white shadow-md' : 'bg-amber-950 text-amber-300 border border-amber-800'
+              activeTab === 'review' ? 'bg-[#C8A46B] text-[#08162A] shadow-md' : 'bg-amber-950 text-amber-300 border border-amber-800'
             }`}
           >
             📋 Review & Approval
@@ -1032,14 +1399,12 @@ export const TestExecution: React.FC = () => {
         {/* TAB -2: STATIC TEMPERATURE TEST */}
         {activeTab === 'statictemp' && (
           <div className="p-6">
-            <StaticTemperatureWizard
+            <OIMLTemperatureSheet
               session={session}
+              instrument={currentInstrument}
               activeRole={activeRole}
-              onUpdateSession={(updated) => {
-                setSession(updated);
-                updateTestSession(updated);
-              }}
               isReadOnly={!canEditTestSession(session, activeRole)}
+              onSaveObservation={handleSaveTemperatureObservationObj}
             />
           </div>
         )}
@@ -1057,1089 +1422,83 @@ export const TestExecution: React.FC = () => {
 
         {/* TAB 0: ZERO-SETTING ACCURACY TEST */}
         {activeTab === 'zerosetting' && (
-          <div className="p-6 space-y-6">
-            {/* Tab Header */}
-            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-3 border-b border-slate-100">
-              <div>
-                <h3 className="text-base font-extrabold text-slate-900">Zero-Setting Accuracy Test</h3>
-                <p className="text-xs text-slate-500 mt-0.5">
-                  Official OIML R 76-1:2006 §4.5.2 &amp; Test Procedure A.4.2.3.
-                </p>
-              </div>
-
-              <div className="flex items-center gap-3 bg-slate-900 text-white p-3 rounded-xl border border-slate-800 shrink-0 text-xs font-mono">
-                <div>
-                  <span className="text-slate-400 block text-[10px] uppercase font-sans font-bold">Zero-Setting Type</span>
-                  <span className="font-bold text-teal-400">{zeroSettingType}</span>
-                </div>
-                <span className="text-slate-700">|</span>
-                <div>
-                  <span className="text-slate-400 block text-[10px] uppercase font-sans font-bold">Verification Interval (e)</span>
-                  <span className="font-bold text-teal-300">{dVal} {dUnit}</span>
-                </div>
-                <span className="text-slate-700">|</span>
-                <div>
-                  <span className="text-slate-400 block text-[10px] uppercase font-sans font-bold">Allowed Limit (±0.25e)</span>
-                  <span className="font-bold text-teal-300">±{(dVal * 0.25).toFixed(2)} {dUnit}</span>
-                </div>
-              </div>
-            </div>
-
-            {/* Guided Zero-Setting Wizard */}
-            <ZeroSettingWizard
-              zeroSettingType={zeroSettingType}
-              eVal={dVal}
-              eUnit={dUnit}
-              existingObservation={(session.zeroSettingObservations || [])[0]}
+          <div className="p-6">
+            <OIMLZeroSheet
+              session={session}
+              instrument={currentInstrument}
+              activeRole={activeRole}
+              isReadOnly={!canEditTestSession(session, activeRole)}
               onSaveObservation={handleSaveZeroSettingObservation}
             />
-
-            {/* Summary Table */}
-            <div className="space-y-2">
-              <h4 className="text-xs font-extrabold uppercase tracking-wider text-slate-700">
-                Zero-Setting Accuracy Summary Table
-              </h4>
-              <div className="overflow-x-auto border border-slate-200 rounded-xl">
-                <table className="w-full text-left border-collapse">
-                  <thead>
-                    <tr className="bg-slate-50 text-[11px] font-semibold uppercase tracking-wider text-slate-500 border-b border-slate-200">
-                      <th className="py-2.5 px-4">Zero-Setting Type</th>
-                      <th className="py-2.5 px-4">Verification Interval (e)</th>
-                      <th className="py-2.5 px-4">Changeover Load (ΔL)</th>
-                      <th className="py-2.5 px-4">Calculated Zero Error (E0)</th>
-                      <th className="py-2.5 px-4">Allowed Limit (±0.25e)</th>
-                      <th className="py-2.5 px-4">Zero-setting Accuracy Check</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100 text-xs font-mono text-slate-800">
-                    {session.zeroSettingObservations && session.zeroSettingObservations.length > 0 ? (
-                      session.zeroSettingObservations.map((z, idx) => (
-                        <tr key={idx} className="hover:bg-slate-50">
-                          <td className="py-2.5 px-4 font-sans font-bold text-slate-900">{z.zeroSettingType}</td>
-                          <td className="py-2.5 px-4 font-bold">{z.verificationIntervalE} {z.eUnit}</td>
-                          <td className="py-2.5 px-4 text-teal-700 font-bold">{z.changeoverAdditionalLoad.toFixed(1)} {z.eUnit}</td>
-                          <td className="py-2.5 px-4 font-bold">
-                            {z.calculatedZeroError > 0 ? '+' : ''}{z.calculatedZeroError.toFixed(2)} {z.eUnit}
-                          </td>
-                          <td className="py-2.5 px-4 font-bold text-teal-700">±{z.permissibleZeroDeviation.toFixed(2)} {z.eUnit}</td>
-                          <td className="py-2.5 px-4 font-sans">
-                            <span
-                              className={`px-2.5 py-0.5 rounded font-bold inline-flex items-center gap-1 ${
-                                z.passed
-                                  ? 'bg-emerald-50 text-emerald-800 border border-emerald-300'
-                                  : 'bg-amber-50 text-amber-800 border border-amber-300'
-                              }`}
-                            >
-                              {z.passed ? '✓ Within Limit' : '✕ Exceeds Limit'}
-                            </span>
-                          </td>
-                        </tr>
-                      ))
-                    ) : (
-                      <tr>
-                        <td colSpan={6} className="py-6 text-center text-slate-400 font-sans">
-                          No zero-setting accuracy observation recorded yet. Follow the guided steps above.
-                        </td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-
-            {/* Bottom Toolbar */}
-            <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-4 border-t border-slate-200">
-              <div />
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={handleSaveDraft}
-                  className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-800 font-semibold text-xs rounded-lg transition-colors border border-slate-200 cursor-pointer"
-                >
-                  Save Draft
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (!(session.zeroSettingObservations || []).some((o) => o.isCompleted)) {
-                      showToast('Zero Setting Incomplete', 'Record a valid changeover observation before continuing.', 'warning');
-                      return;
-                    }
-                    setActiveTab('eccentricity');
-                    showToast('Zero Setting Saved', 'Progress updated cleanly.', 'success');
-                  }}
-                  className="flex items-center gap-1.5 px-5 py-2.5 bg-teal-600 hover:bg-teal-700 text-white font-bold text-xs rounded-lg cursor-pointer shadow-xs"
-                >
-                  Save &amp; Continue <ChevronRight className="w-4 h-4" />
-                </button>
-              </div>
-            </div>
           </div>
         )}
 
         {/* TAB 0.5: OIML TARE OPERATION TEST */}
         {activeTab === 'tare' && (
-          <div className="p-6 space-y-6">
-            <TareWizard
+          <div className="p-6">
+            <OIMLTareSheet
               session={session}
-              instrument={getInstrumentsStore().find((i) => i.id === session.instrumentId)}
+              instrument={currentInstrument}
+              activeRole={activeRole}
+              isReadOnly={!canEditTestSession(session, activeRole)}
               onSaveTareSetting={handleSaveTareSetting}
               onSaveNetObservation={handleSaveTareNetObservation}
-              onCompleteTareTest={handleCompleteTareTest}
             />
           </div>
         )}
 
         {/* TAB 1: ECCENTRICITY TEST */}
         {activeTab === 'eccentricity' && (
-          <div className="p-6 space-y-6">
-            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-3 border-b border-slate-100">
-              <div>
-                <h3 className="text-base font-extrabold text-slate-900">Eccentricity Test</h3>
-                <p className="text-xs text-slate-500 mt-0.5">
-                  Official OIML R 76-1:2006 §3.6.2 & Test Procedure A.4.7 compliance engine.
-                </p>
-              </div>
-
-              {/* Single Global Test Load Input */}
-              <div className="flex items-center gap-2 bg-slate-900 text-white p-2.5 rounded-xl border border-slate-800 shrink-0">
-                <span className="text-xs font-bold text-teal-400 uppercase">Test Load (1/3 Max):</span>
-                <div className="flex items-center">
-                  <input
-                    type="number"
-                    step="0.001"
-                    required
-                    value={eccTestLoad}
-                    onChange={(e) => setEccTestLoad(Number(e.target.value))}
-                    className="w-24 px-2 py-1 bg-slate-800 text-white font-mono font-bold text-xs rounded-l border border-slate-700"
-                  />
-                  <span className="px-2 py-1 bg-slate-700 text-slate-300 font-bold text-xs rounded-r">kg</span>
-                </div>
-              </div>
-            </div>
-
-            {/* Overall Eccentricity Evaluation Banner */}
-            {(() => {
-              const overallEval = evaluateOverallEccentricity(session.eccentricityObservations, eccProfile, eccNumSupports);
-              return (
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between p-3.5 bg-slate-900 text-white rounded-xl border border-slate-800 text-xs gap-2">
-                  <div className="flex items-center gap-2">
-                    <span className="font-bold text-teal-400 uppercase">Overall Status:</span>
-                    <span className={`font-bold font-mono px-2 py-0.5 rounded text-[11px] ${
-                      overallEval.isPassed
-                        ? 'bg-emerald-950 text-emerald-300 border border-emerald-700'
-                        : overallEval.isComplete
-                        ? 'bg-amber-950 text-amber-300 border border-amber-700'
-                        : 'bg-slate-800 text-slate-300 border border-slate-700'
-                    }`}>
-                      {overallEval.summaryText}
-                    </span>
-                  </div>
-                  <div className="text-slate-400 text-[11px] font-mono">
-                    Progress: {overallEval.completedPositions} / {overallEval.totalPositions} Positions Recorded
-                  </div>
-                </div>
-              );
-            })()}
-
-            {/* Top-Down Platform Diagram */}
-            <EccentricityPlatform
-              currentPosition={eccPosition}
-              profile={eccProfile}
-              numSupports={eccNumSupports}
-              onSelectPosition={(posId) => {
-                setEccPosition(posId);
-                const existingObs = session.eccentricityObservations.find((o) => o.position === posId);
-                if (existingObs) {
-                  setScaleReadingInput(existingObs.indicatedValue.toString());
-                } else {
-                  const calcVal = Number((eccTestLoad + (posId % 2 === 0 ? 0.002 : -0.001)).toFixed(3));
-                  setScaleReadingInput(calcVal.toString());
-                }
-              }}
-              observations={session.eccentricityObservations}
+          <div className="p-6">
+            <OIMLEccentricitySheet
+              session={session}
+              instrument={currentInstrument}
+              activeRole={activeRole}
+              isReadOnly={!canEditTestSession(session, activeRole)}
+              onSaveObservation={handleSaveEccentricityObservationObj}
+              onDeleteObservation={handleDeleteEccentricityObservation}
             />
-
-            {(() => {
-              const { eVal, eUnit } = parseVerificationInterval(session.verificationInterval);
-              const readingVal = !scaleReadingInput || isNaN(Number(scaleReadingInput)) ? eccTestLoad : Number(scaleReadingInput);
-              const currentMPECheck = evaluateMPEScaleReading({
-                referenceLoad: eccTestLoad,
-                referenceLoadUnit: 'kg',
-                scaleReading: readingVal,
-                scaleReadingUnit: 'kg',
-                accuracyClass: session.accuracyClass,
-                verificationScaleIntervalE: eVal,
-                eUnit,
-                verificationMode: 'INITIAL_VERIFICATION',
-              });
-              const currentPosConfig = getPosConfig(eccPosition);
-
-              return (
-                <>
-                  {/* Selected Position Reading Form */}
-                  <form onSubmit={handleSaveEccentricityReading} className="p-5 bg-slate-50 rounded-xl border border-slate-200 space-y-4">
-                    <div className="flex items-center justify-between font-bold text-xs text-slate-900 border-b border-slate-200 pb-2">
-                      <span>Record Reading for Position {eccPosition} — {currentPosConfig.label}</span>
-                      <span className="text-slate-600 font-mono text-[11px]">Test Load: {eccTestLoad.toFixed(3)} kg</span>
-                    </div>
-
-                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-xs">
-                      <div>
-                        <label className="block font-semibold text-slate-700 mb-1">Reference Load (L)</label>
-                        <div className="px-3 py-2 bg-slate-200 rounded-lg font-mono text-slate-800 font-bold">
-                          {eccTestLoad.toFixed(3)} kg
-                        </div>
-                      </div>
-
-                      <div>
-                        <label className="block font-semibold text-slate-700 mb-1">Scale Reading (I) *</label>
-                        <div className="flex items-center">
-                          <input
-                            type="number"
-                            step="0.001"
-                            required
-                            value={scaleReadingInput}
-                            onChange={(e) => setScaleReadingInput(e.target.value)}
-                            placeholder="10.000"
-                            className="w-full px-3 py-2 bg-white border border-slate-200 rounded-l-lg font-mono text-slate-900 font-bold focus:outline-hidden focus:border-teal-600"
-                          />
-                          <span className="px-3 py-2 bg-slate-200 text-slate-700 font-bold rounded-r-lg border border-l-0 border-slate-200">
-                            kg
-                          </span>
-                        </div>
-                      </div>
-
-                      <div>
-                        <label className="block font-semibold text-slate-700 mb-1">Notes (Optional)</label>
-                        <input
-                          type="text"
-                          value={notesInput}
-                          onChange={(e) => setNotesInput(e.target.value)}
-                          placeholder="e.g. Reading stabilized"
-                          className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-slate-900"
-                        />
-                      </div>
-                    </div>
-
-                    {/* Calculated Difference & Live MPE Check */}
-                    <div className="p-3 bg-white rounded-lg border border-slate-200 flex flex-col md:flex-row md:items-center justify-between gap-3 text-xs">
-                      <div className="flex items-center gap-3 font-mono flex-wrap">
-                        <div>
-                          <span className="text-slate-500">Difference (I - L): </span>
-                          <span className="font-bold text-slate-900">{currentMPECheck.indicatedDifferenceFormatted}</span>
-                        </div>
-                        <span className="text-slate-300">|</span>
-                        <div>
-                          <span className="text-slate-500">Allowed MPE: </span>
-                          <span className="font-bold text-teal-700">±{currentMPECheck.mpeResult.mpeValue} {currentMPECheck.mpeResult.mpeUnit}</span>
-                        </div>
-                        <span className="text-slate-300">|</span>
-                        <div>
-                          <span className="text-slate-500">MPE Check: </span>
-                          <span
-                            className={`font-bold font-mono px-2 py-0.5 rounded text-[11px] ${
-                              currentMPECheck.isPassed
-                                ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
-                                : 'bg-amber-100 text-amber-800 border border-amber-300'
-                            }`}
-                          >
-                            {currentMPECheck.isPassed ? '✓ WITHIN MPE' : '✕ EXCEEDS MPE'}
-                          </span>
-                        </div>
-                      </div>
-
-                      <button
-                        type="submit"
-                        className="flex items-center gap-2 px-5 py-2.5 bg-teal-600 hover:bg-teal-700 text-white font-bold text-xs rounded-lg transition-colors shadow-xs shrink-0 cursor-pointer"
-                      >
-                        <Plus className="w-4 h-4" /> Save Reading
-                      </button>
-                    </div>
-                  </form>
-
-                  {/* Expandable MPE Calculation Breakdown Panel */}
-                  <MPECalculationExplanationPanel checkResult={currentMPECheck} defaultExpanded={false} />
-                </>
-              );
-            })()}
-
-            {/* Position Readings Summary Table */}
-            <div className="overflow-x-auto border border-slate-200 rounded-xl">
-              <table className="w-full text-left border-collapse">
-                <thead>
-                  <tr className="bg-slate-50 text-[11px] font-semibold uppercase tracking-wider text-slate-500 border-b border-slate-200">
-                    <th className="py-2.5 px-4">Position #</th>
-                    <th className="py-2.5 px-4">Location</th>
-                    <th className="py-2.5 px-4">Reference Load</th>
-                    <th className="py-2.5 px-4">Scale Reading</th>
-                    <th className="py-2.5 px-4">Measured Difference</th>
-                    <th className="py-2.5 px-4">Allowed MPE</th>
-                    <th className="py-2.5 px-4">MPE Check Status</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100 text-xs font-mono text-slate-800">
-                  {session.eccentricityObservations.length > 0 ? (
-                    session.eccentricityObservations.map((ecc) => {
-                      const { eVal, eUnit } = parseVerificationInterval(session.verificationInterval);
-                      const mpeCheck = evaluateMPEScaleReading({
-                        referenceLoad: ecc.load,
-                        referenceLoadUnit: 'kg',
-                        scaleReading: ecc.indicatedValue,
-                        scaleReadingUnit: 'kg',
-                        accuracyClass: session.accuracyClass,
-                        verificationScaleIntervalE: eVal,
-                        eUnit,
-                        verificationMode: 'INITIAL_VERIFICATION',
-                      });
-
-                      return (
-                        <tr key={ecc.position} className="hover:bg-slate-50">
-                          <td className="py-2.5 px-4 font-sans font-bold">Position {ecc.position}</td>
-                          <td className="py-2.5 px-4 font-sans text-slate-700">{ecc.locationLabel}</td>
-                          <td className="py-2.5 px-4">{ecc.load.toFixed(3)} kg</td>
-                          <td className="py-2.5 px-4 font-bold">{ecc.indicatedValue.toFixed(3)} kg</td>
-                          <td className="py-2.5 px-4 font-bold">
-                            {mpeCheck.indicatedDifferenceFormatted}
-                          </td>
-                          <td className="py-2.5 px-4 font-bold text-teal-700">
-                            ±{mpeCheck.mpeResult.mpeValue} {mpeCheck.mpeResult.mpeUnit}
-                          </td>
-                          <td className="py-2.5 px-4 font-sans">
-                            <span
-                              className={`px-2.5 py-0.5 rounded font-bold inline-flex items-center gap-1 ${
-                                mpeCheck.isPassed
-                                  ? 'bg-emerald-50 text-emerald-800 border border-emerald-300'
-                                  : 'bg-amber-50 text-amber-800 border border-amber-300'
-                              }`}
-                            >
-                              {mpeCheck.isPassed ? '✓ Within MPE' : '✕ Exceeds MPE'}
-                            </span>
-                          </td>
-                        </tr>
-                      );
-                    })
-                  ) : (
-                    <tr>
-                      <td colSpan={7} className="py-6 text-center text-slate-400 font-sans">
-                        No position readings saved yet. Click Position 1 (Front Left) above to start.
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-
-            {/* CLEAR BOTTOM NAVIGATION TOOLBAR */}
-            <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-4 border-t border-slate-200">
-              <button
-                type="button"
-                onClick={() => setActiveTab('weighing')}
-                className="flex items-center gap-1.5 px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold text-xs rounded-lg transition-colors cursor-pointer"
-              >
-                <ChevronLeft className="w-4 h-4" /> Previous Test
-              </button>
-
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={handleSaveDraft}
-                  className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-800 font-semibold text-xs rounded-lg transition-colors border border-slate-200 cursor-pointer"
-                >
-                  Save Draft
-                </button>
-
-                {isEccCompleted ? (
-                  <button
-                    type="button"
-                    onClick={() => setActiveTab('review')}
-                    className="flex items-center gap-2 px-6 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs rounded-lg transition-colors shadow-md cursor-pointer"
-                  >
-                    <Check className="w-4 h-4" /> Complete Test & Continue
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => setActiveTab('weighing')}
-                    className="flex items-center gap-1.5 px-5 py-2.5 bg-teal-600 hover:bg-teal-700 text-white font-bold text-xs rounded-lg transition-colors cursor-pointer"
-                  >
-                    Save & Continue <ChevronRight className="w-4 h-4" />
-                  </button>
-                )}
-              </div>
-            </div>
           </div>
         )}
 
         {/* TAB 2: WEIGHING ACCURACY & PERFORMANCE TEST */}
         {activeTab === 'weighing' && (
-          <div className="p-6 space-y-6">
-            {/* Context Header Toolbar */}
-            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-4 border-b border-slate-100">
-              <div>
-                <div className="flex items-center gap-2">
-                  <h3 className="text-base font-extrabold text-slate-900">Weighing Performance & Accuracy Test</h3>
-                  <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-teal-50 text-teal-800 border border-teal-200 font-bold">
-                    OIML R 76-1:2006
-                  </span>
-                </div>
-                <p className="text-xs text-slate-500 mt-0.5">
-                  Record scale readings for certified reference loads to evaluate errors against Table 6 MPE limits.
-                </p>
-              </div>
-
-              {/* Verification Mode Selector */}
-              <div className="flex items-center gap-2 bg-slate-900 text-white p-2 rounded-xl border border-slate-800 shrink-0 text-xs">
-                <span className="font-bold text-teal-400 pl-1 uppercase text-[11px]">Mode:</span>
-                <button
-                  type="button"
-                  onClick={() => setVerificationMode('INITIAL_VERIFICATION')}
-                  className={`px-2.5 py-1 rounded-lg font-bold transition-all cursor-pointer ${
-                    verificationMode === 'INITIAL_VERIFICATION'
-                      ? 'bg-teal-600 text-white shadow-xs'
-                      : 'bg-slate-800 text-slate-400 hover:text-white'
-                  }`}
-                >
-                  Initial Verification
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setVerificationMode('IN_SERVICE')}
-                  className={`px-2.5 py-1 rounded-lg font-bold transition-all cursor-pointer ${
-                    verificationMode === 'IN_SERVICE'
-                      ? 'bg-teal-600 text-white shadow-xs'
-                      : 'bg-slate-800 text-slate-400 hover:text-white'
-                  }`}
-                >
-                  In-Service
-                </button>
-              </div>
-            </div>
-
-            {/* Instrument Specification Banner Card */}
-            {(() => {
-              const registeredInst = getInstrumentsStore().find((i) => i.id === session.instrumentId);
-              const { eVal, eUnit } = parseVerificationInterval(session.verificationInterval);
-              const maxCapVal = registeredInst?.metrology.maxCapacity ?? 30;
-              const maxCapUnit = registeredInst?.metrology.maxUnit ?? 'kg';
-              const minCapVal = registeredInst?.metrology.minCapacity ?? 0.1;
-              const minCapUnit = registeredInst?.metrology.minUnit ?? maxCapUnit;
-              const dScaleVal = registeredInst?.metrology.scaleIntervalD ?? eVal;
-              const dScaleUnit = registeredInst?.metrology.dUnit ?? eUnit;
-              const nIntervals = registeredInst?.metrology.verificationScaleIntervalsN ?? calculateVerificationIntervals(maxCapVal, maxCapUnit, eVal, eUnit);
-
-              return (
-                <div className="bg-slate-900 text-white p-4 rounded-xl border border-slate-800 space-y-3">
-                  <div className="flex items-center justify-between border-b border-slate-800 pb-2">
-                    <span className="text-[11px] font-bold uppercase tracking-wider text-teal-400">
-                      Instrument Metrological Context
-                    </span>
-                    <span className="text-xs font-mono text-slate-400">ID: {session.instrumentId}</span>
-                  </div>
-
-                  <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-7 gap-3 text-xs font-mono">
-                    <div className="bg-slate-950 p-2.5 rounded-lg border border-slate-800">
-                      <span className="text-[10px] text-slate-400 font-sans block uppercase font-bold">Class</span>
-                      <span className="font-bold text-teal-300 text-sm">{session.accuracyClass}</span>
-                    </div>
-
-                    <div className="bg-slate-950 p-2.5 rounded-lg border border-slate-800">
-                      <span className="text-[10px] text-slate-400 font-sans block uppercase font-bold">Max Cap</span>
-                      <span className="font-bold text-white text-sm">{maxCapVal} {maxCapUnit}</span>
-                    </div>
-
-                    <div className="bg-slate-950 p-2.5 rounded-lg border border-slate-800">
-                      <span className="text-[10px] text-slate-400 font-sans block uppercase font-bold">Min Cap</span>
-                      <span className="font-bold text-white text-sm">{minCapVal} {minCapUnit}</span>
-                    </div>
-
-                    <div className="bg-slate-950 p-2.5 rounded-lg border border-slate-800">
-                      <span className="text-[10px] text-slate-400 font-sans block uppercase font-bold">Interval (e)</span>
-                      <span className="font-bold text-teal-400 text-sm">{eVal} {eUnit}</span>
-                    </div>
-
-                    <div className="bg-slate-950 p-2.5 rounded-lg border border-slate-800">
-                      <span className="text-[10px] text-slate-400 font-sans block uppercase font-bold">Interval (d)</span>
-                      <span className="font-bold text-white text-sm">{dScaleVal} {dScaleUnit}</span>
-                    </div>
-
-                    <div className="bg-slate-950 p-2.5 rounded-lg border border-slate-800">
-                      <span className="text-[10px] text-slate-400 font-sans block uppercase font-bold">Intervals (n)</span>
-                      <span className="font-bold text-white text-sm">{nIntervals.toLocaleString()}</span>
-                    </div>
-
-                    <div className="bg-slate-950 p-2.5 rounded-lg border border-slate-800">
-                      <span className="text-[10px] text-slate-400 font-sans block uppercase font-bold">Mode</span>
-                      <span className="font-bold text-amber-400 text-[11px] uppercase">
-                        {verificationMode === 'INITIAL_VERIFICATION' ? 'Initial' : 'In-Service'}
-                      </span>
-                    </div>
-                  </div>
-                </div>
-              );
-            })()}
-
-            {/* Suggested Load Points Helper */}
-            {(() => {
-              const registeredInst = getInstrumentsStore().find((i) => i.id === session.instrumentId);
-              const { eVal, eUnit } = parseVerificationInterval(session.verificationInterval);
-              const maxCapVal = registeredInst?.metrology.maxCapacity ?? 30;
-              const minCapVal = registeredInst?.metrology.minCapacity ?? 0.1;
-
-              // Suggested load points in kg
-              const suggested500e = Number(convertMassUnit(500 * eVal, eUnit, 'kg').toFixed(3));
-              const suggested2000e = Number(convertMassUnit(2000 * eVal, eUnit, 'kg').toFixed(3));
-              const suggestedHalf = Number((maxCapVal / 2).toFixed(3));
-
-              const suggestions = [
-                { label: `Min (${minCapVal} kg)`, val: minCapVal },
-                { label: `500e Band (${suggested500e} kg)`, val: suggested500e },
-                { label: `2000e Band (${suggested2000e} kg)`, val: suggested2000e },
-                { label: `50% Max (${suggestedHalf} kg)`, val: suggestedHalf },
-                { label: `100% Max (${maxCapVal} kg)`, val: maxCapVal },
-              ].filter((s) => s.val > 0 && s.val <= maxCapVal);
-
-              return (
-                <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 space-y-2 text-xs">
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                    <span className="font-bold text-slate-800 flex items-center gap-1.5">
-                      <Scale className="w-4 h-4 text-teal-600" />
-                      Suggested Test Load Points (Demo Helper):
-                    </span>
-                    <span className="text-[10px] text-slate-500 italic">
-                      ℹ Suggested for demo/workflow speed. Officers may enter any prescribed test load.
-                    </span>
-                  </div>
-
-                  <div className="flex items-center gap-2 flex-wrap">
-                    {suggestions.map((s, idx) => (
-                      <button
-                        key={idx}
-                        type="button"
-                        onClick={() => {
-                          setWeighingRefLoadInput(s.val.toString());
-                          setWeighingScaleReadingInput((s.val + (s.val === 10 ? 0.008 : 0.001)).toFixed(3));
-                        }}
-                        className="px-3 py-1.5 bg-white hover:bg-teal-50 border border-slate-200 hover:border-teal-400 rounded-lg text-slate-700 hover:text-teal-900 font-mono font-semibold transition-colors cursor-pointer text-xs shadow-2xs"
-                      >
-                        {s.label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              );
-            })()}
-
-            {/* Observation Form */}
-            {(() => {
-              const { eVal, eUnit } = parseVerificationInterval(session.verificationInterval);
-              const refNum = isNaN(Number(weighingRefLoadInput)) || Number(weighingRefLoadInput) <= 0 ? 10 : Number(weighingRefLoadInput);
-              const readingNum = isNaN(Number(weighingScaleReadingInput)) || Number(weighingScaleReadingInput) < 0 ? refNum : Number(weighingScaleReadingInput);
-
-              const liveMPECheck = evaluateMPEScaleReading({
-                referenceLoad: refNum,
-                referenceLoadUnit: 'kg',
-                scaleReading: readingNum,
-                scaleReadingUnit: 'kg',
-                accuracyClass: session.accuracyClass,
-                verificationScaleIntervalE: eVal,
-                eUnit,
-                verificationMode,
-              });
-
-              return (
-                <>
-                  <form onSubmit={handleSaveWeighingObservation} className="p-5 bg-slate-50 rounded-xl border border-slate-200 space-y-4">
-                    <div className="flex items-center justify-between font-bold text-xs text-slate-900 border-b border-slate-200 pb-2">
-                      <span>Add Weighing Performance Observation</span>
-                      <span className="text-slate-600 font-mono text-[11px]">Mode: {verificationMode.replace('_', ' ')}</span>
-                    </div>
-
-                    <div className="grid grid-cols-1 sm:grid-cols-4 gap-4 text-xs">
-                      <div>
-                        <label className="block font-semibold text-slate-700 mb-1">Reference Load (L) *</label>
-                        <div className="flex items-center">
-                          <input
-                            type="number"
-                            step="0.001"
-                            required
-                            value={weighingRefLoadInput}
-                            onChange={(e) => setWeighingRefLoadInput(e.target.value)}
-                            placeholder="10.000"
-                            className="w-full px-3 py-2 bg-white border border-slate-200 rounded-l-lg font-mono text-slate-900 font-bold focus:outline-hidden focus:border-teal-600"
-                          />
-                          <span className="px-3 py-2 bg-slate-200 text-slate-700 font-bold rounded-r-lg border border-l-0 border-slate-200">
-                            kg
-                          </span>
-                        </div>
-                      </div>
-
-                      <div>
-                        <label className="block font-semibold text-slate-700 mb-1">Scale Reading (I) *</label>
-                        <div className="flex items-center">
-                          <input
-                            type="number"
-                            step="0.001"
-                            required
-                            value={weighingScaleReadingInput}
-                            onChange={(e) => setWeighingScaleReadingInput(e.target.value)}
-                            placeholder="10.008"
-                            className="w-full px-3 py-2 bg-white border border-slate-200 rounded-l-lg font-mono text-slate-900 font-bold focus:outline-hidden focus:border-teal-600"
-                          />
-                          <span className="px-3 py-2 bg-slate-200 text-slate-700 font-bold rounded-r-lg border border-l-0 border-slate-200">
-                            kg
-                          </span>
-                        </div>
-                      </div>
-
-                      <div>
-                        <label className="block font-semibold text-slate-700 mb-1">Load Direction</label>
-                        <select
-                          value={weighingDirection}
-                          onChange={(e) => setWeighingDirection(e.target.value as 'Increasing' | 'Decreasing')}
-                          className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-slate-900 font-medium"
-                        >
-                          <option value="Increasing">Increasing (Ascending)</option>
-                          <option value="Decreasing">Decreasing (Descending)</option>
-                        </select>
-                      </div>
-
-                      <div>
-                        <label className="block font-semibold text-slate-700 mb-1">Notes (Optional)</label>
-                        <input
-                          type="text"
-                          value={weighingNotesInput}
-                          onChange={(e) => setWeighingNotesInput(e.target.value)}
-                          placeholder="e.g. Stable reading"
-                          className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-slate-900"
-                        />
-                      </div>
-                    </div>
-
-                    {/* Calculated Live Error & MPE Check */}
-                    <div className="p-3.5 bg-white rounded-lg border border-slate-200 flex flex-col md:flex-row md:items-center justify-between gap-3 text-xs">
-                      <div className="flex items-center gap-3 font-mono flex-wrap">
-                        <div>
-                          <span className="text-slate-500">Measured Error (I - L): </span>
-                          <span className="font-bold text-slate-900">{liveMPECheck.indicatedDifferenceFormatted}</span>
-                        </div>
-                        <span className="text-slate-300">|</span>
-                        <div>
-                          <span className="text-slate-500">Allowed MPE: </span>
-                          <span className="font-bold text-teal-700">±{liveMPECheck.mpeResult.mpeValue} {liveMPECheck.mpeResult.mpeUnit}</span>
-                        </div>
-                        <span className="text-slate-300">|</span>
-                        <div>
-                          <span className="text-slate-500">MPE Check: </span>
-                          <span
-                            className={`font-bold font-mono px-2.5 py-0.5 rounded text-[11px] ${
-                              liveMPECheck.isPassed
-                                ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
-                                : 'bg-amber-100 text-amber-800 border border-amber-300'
-                            }`}
-                          >
-                            {liveMPECheck.isPassed ? '✓ WITHIN MPE' : '✕ EXCEEDS MPE'}
-                          </span>
-                        </div>
-                      </div>
-
-                      <button
-                        type="submit"
-                        className="flex items-center gap-2 px-6 py-2.5 bg-teal-600 hover:bg-teal-700 text-white font-bold text-xs rounded-lg transition-colors shadow-xs shrink-0 cursor-pointer"
-                      >
-                        <Plus className="w-4 h-4" /> Add Observation
-                      </button>
-                    </div>
-                  </form>
-
-                  {/* Expandable MPE Calculation Breakdown Panel */}
-                  <MPECalculationExplanationPanel checkResult={liveMPECheck} defaultExpanded={false} />
-                </>
-              );
-            })()}
-
-            {/* Weighing Observations Summary Table */}
-            <div className="overflow-x-auto border border-slate-200 rounded-xl">
-              <table className="w-full text-left border-collapse">
-                <thead>
-                  <tr className="bg-slate-50 text-[11px] font-semibold uppercase tracking-wider text-slate-500 border-b border-slate-200">
-                    <th className="py-2.5 px-4">Obs #</th>
-                    <th className="py-2.5 px-4">Reference Load</th>
-                    <th className="py-2.5 px-4">Scale Reading</th>
-                    <th className="py-2.5 px-4">Difference</th>
-                    <th className="py-2.5 px-4">Allowed MPE</th>
-                    <th className="py-2.5 px-4">MPE Check</th>
-                    <th className="py-2.5 px-4">Notes</th>
-                    <th className="py-2.5 px-4 text-right">Actions</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100 text-xs font-mono text-slate-800">
-                  {session.weighingObservations.length > 0 ? (
-                    session.weighingObservations.map((obs, idx) => {
-                      const { eVal, eUnit } = parseVerificationInterval(session.verificationInterval);
-                      const mpeCheck = evaluateMPEScaleReading({
-                        referenceLoad: obs.load,
-                        referenceLoadUnit: 'kg',
-                        scaleReading: obs.indicatedValue,
-                        scaleReadingUnit: 'kg',
-                        accuracyClass: session.accuracyClass,
-                        verificationScaleIntervalE: eVal,
-                        eUnit,
-                        verificationMode,
-                      });
-
-                      return (
-                        <tr key={obs.id} className="hover:bg-slate-50">
-                          <td className="py-2.5 px-4 font-sans font-bold text-slate-900">#{idx + 1}</td>
-                          <td className="py-2.5 px-4 font-bold">{obs.load.toFixed(3)} kg</td>
-                          <td className="py-2.5 px-4 font-bold">{obs.indicatedValue.toFixed(3)} kg</td>
-                          <td className="py-2.5 px-4 font-bold">
-                            {mpeCheck.indicatedDifferenceFormatted}
-                          </td>
-                          <td className="py-2.5 px-4 font-bold text-teal-700">
-                            ±{mpeCheck.mpeResult.mpeValue} {mpeCheck.mpeResult.mpeUnit}
-                          </td>
-                          <td className="py-2.5 px-4 font-sans">
-                            <span
-                              className={`px-2 py-0.5 rounded font-bold inline-flex items-center gap-1 ${
-                                mpeCheck.isPassed
-                                  ? 'bg-emerald-50 text-emerald-800 border border-emerald-300'
-                                  : 'bg-amber-50 text-amber-800 border border-amber-300'
-                              }`}
-                            >
-                              {mpeCheck.isPassed ? '✓ Within MPE' : '✕ Exceeds MPE'}
-                            </span>
-                          </td>
-                          <td className="py-2.5 px-4 font-sans text-slate-500">{obs.notes || '—'}</td>
-                          <td className="py-2.5 px-4 text-right font-sans">
-                            <div className="flex items-center justify-end gap-1">
-                              <button
-                                type="button"
-                                onClick={() => handleEditWeighingObservation(obs)}
-                                className="p-1 rounded text-teal-600 hover:bg-teal-50 cursor-pointer"
-                                title="Edit Observation"
-                              >
-                                <Pencil className="w-4 h-4" />
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => handleDeleteWeighingObservation(obs.id)}
-                                className="p-1 rounded text-rose-500 hover:bg-rose-50 cursor-pointer"
-                                title="Delete Observation"
-                              >
-                                <Trash2 className="w-4 h-4" />
-                              </button>
-                            </div>
-                          </td>
-                        </tr>
-                      );
-                    })
-                  ) : (
-                    <tr>
-                      <td colSpan={8} className="py-8 text-center text-slate-400 font-sans">
-                        No weighing accuracy test points recorded yet. Use the form above to add observation points.
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-
-            {/* Bottom Toolbar */}
-            <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-4 border-t border-slate-200">
-              <button
-                type="button"
-                onClick={() => setActiveTab('eccentricity')}
-                className="flex items-center gap-1.5 px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold text-xs rounded-lg cursor-pointer"
-              >
-                <ChevronLeft className="w-4 h-4" /> Previous Test (Eccentricity)
-              </button>
-
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={handleSaveDraft}
-                  className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-800 font-semibold text-xs rounded-lg transition-colors border border-slate-200 cursor-pointer"
-                >
-                  Save Draft
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (session.weighingObservations.length === 0) {
-                      showToast('No Observations', 'Record at least one weighing accuracy observation point before completing.', 'warning');
-                      return;
-                    }
-                    setActiveTab('repeatability');
-                    showToast('Accuracy Test Saved', 'Progress updated cleanly.', 'success');
-                  }}
-                  className="flex items-center gap-1.5 px-5 py-2.5 bg-teal-600 hover:bg-teal-700 text-white font-bold text-xs rounded-lg cursor-pointer shadow-xs"
-                >
-                  Save & Continue <ChevronRight className="w-4 h-4" />
-                </button>
-              </div>
-            </div>
+          <div className="p-6">
+            <OIMLWeighingSheet
+              session={session}
+              instrument={currentInstrument}
+              activeRole={activeRole}
+              isReadOnly={!canEditTestSession(session, activeRole)}
+              onSaveObservation={handleSaveWeighingObservationObj}
+              onDeleteObservation={handleDeleteWeighingObservation}
+            />
           </div>
         )}
 
+        {/* TAB 3: REPEATABILITY TEST */}
         {activeTab === 'repeatability' && (
-          <div className="p-6 space-y-6">
-            <div className="pb-3 border-b border-slate-100">
-              <h3 className="text-base font-bold text-slate-900">Repeatability Evaluation</h3>
-            </div>
-            <div className="p-4 bg-slate-50 rounded-xl border border-slate-200 text-xs">
-              <p className="font-bold text-slate-900">10 Runs at 50% & 100% Max Capacity</p>
-            </div>
-
-            <div className="flex justify-between pt-4 border-t border-slate-200">
-              <button
-                type="button"
-                onClick={() => setActiveTab('weighing')}
-                className="flex items-center gap-1.5 px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold text-xs rounded-lg cursor-pointer"
-              >
-                <ChevronLeft className="w-4 h-4" /> Previous Test (Accuracy)
-              </button>
-              <button
-                type="button"
-                onClick={() => setActiveTab('discrimination')}
-                className="flex items-center gap-1.5 px-5 py-2.5 bg-teal-600 hover:bg-teal-700 text-white font-bold text-xs rounded-lg cursor-pointer"
-              >
-                Save &amp; Continue to Discrimination <ChevronRight className="w-4 h-4" />
-              </button>
-            </div>
+          <div className="p-6">
+            <OIMLRepeatabilitySheet
+              session={session}
+              instrument={currentInstrument}
+              activeRole={activeRole}
+              isReadOnly={!canEditTestSession(session, activeRole)}
+              onSaveObservation={handleSaveRepeatabilityObservationObj}
+              onDeleteObservation={handleDeleteRepeatabilityObservation}
+            />
           </div>
         )}
 
         {/* TAB 4: DISCRIMINATION TEST */}
         {activeTab === 'discrimination' && (
-          <div className="p-6 space-y-6">
-            {/* Tab Header */}
-            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-3 border-b border-slate-100">
-              <div>
-                <h3 className="text-base font-extrabold text-slate-900">Discrimination Test</h3>
-                <p className="text-xs text-slate-500 mt-0.5">
-                  Official OIML R 76-1:2006 §3.8 &amp; Test Procedure A.4.8.2 (Digital Indication).
-                </p>
-              </div>
-
-              {/* Scale Interval Breakdown Display */}
-              <div className="flex items-center gap-3 bg-slate-900 text-white p-3 rounded-xl border border-slate-800 shrink-0 text-xs font-mono">
-                <div>
-                  <span className="text-slate-400 block text-[10px] uppercase font-sans font-bold">Scale Interval (d)</span>
-                  <span className="font-bold text-teal-400">{dVal} {dUnit}</span>
-                </div>
-                <span className="text-slate-700">|</span>
-                <div>
-                  <span className="text-slate-400 block text-[10px] uppercase font-sans font-bold">0.1d (Increment)</span>
-                  <span className="font-bold text-teal-300">{(dVal * 0.1).toFixed(1)} {dUnit}</span>
-                </div>
-                <span className="text-slate-700">|</span>
-                <div>
-                  <span className="text-slate-400 block text-[10px] uppercase font-sans font-bold">1.4d (Test Weight)</span>
-                  <span className="font-bold text-teal-300">{(dVal * 1.4).toFixed(1)} {dUnit}</span>
-                </div>
-              </div>
-            </div>
-
-            {/* Helper Info Banner */}
-            <div className="p-3 bg-teal-50 border border-teal-200 text-teal-900 rounded-xl text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-              <span>ℹ NAWI Verify calculates the small additional test weights automatically from d ({dVal} {dUnit}).</span>
-              <span className="font-mono text-[11px] font-bold text-teal-800 shrink-0">
-                0.1d = {(dVal * 0.1).toFixed(1)} {dUnit} • 1.4d = {(dVal * 1.4).toFixed(1)} {dUnit}
-              </span>
-            </div>
-
-            {/* Applicability Warning Banner if applicable */}
-            {(() => {
-              const appCheck = isDigitalDiscriminationApplicable({
-                testContext: session.testContext || 'TYPE_EXAMINATION',
-                dVal,
-                dUnit,
-                isDigital: true,
-              });
-
-              if (!appCheck.isApplicable) {
-                return (
-                  <div className="p-4 bg-amber-50 border border-amber-200 text-amber-900 rounded-xl text-xs flex items-center gap-3">
-                    <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0" />
-                    <div>
-                      <span className="font-bold uppercase block text-[11px] text-amber-950">Procedure Applicability Notice</span>
-                      <span>{appCheck.message}</span>
-                    </div>
-                  </div>
-                );
-              }
-              return null;
-            })()}
-
-            {/* Overall Status Banner */}
-            {(() => {
-              const overallEval = evaluateOverallDiscrimination(session.discriminationObservations || []);
-              return (
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between p-3.5 bg-slate-900 text-white rounded-xl border border-slate-800 text-xs gap-2">
-                  <div className="flex items-center gap-2">
-                    <span className="font-bold text-teal-400 uppercase">Overall Status:</span>
-                    <span
-                      className={`font-bold font-mono px-2 py-0.5 rounded text-[11px] ${
-                        overallEval.isPassed
-                          ? 'bg-emerald-950 text-emerald-300 border border-emerald-700'
-                          : overallEval.isComplete
-                          ? 'bg-amber-950 text-amber-300 border border-amber-700'
-                          : 'bg-slate-800 text-slate-300 border border-slate-700'
-                      }`}
-                    >
-                      {overallEval.summaryText}
-                    </span>
-                  </div>
-                  <div className="text-slate-400 text-[11px] font-mono">
-                    Progress: {overallEval.completedCount} / 3 Required Test Points Completed
-                  </div>
-                </div>
-              );
-            })()}
-
-            {/* 3 Required Load Points Navigation Tabs */}
-            <div className="flex items-center gap-2 overflow-x-auto border-b border-slate-200 pb-3">
-              {discriminationPoints.map((pt) => {
-                const obs = (session.discriminationObservations || []).find((o) => o.testPointId === pt.id);
-                const isDone = obs?.isCompleted || obs?.resultStatus;
-                const isSelected = activeDiscPointId === pt.id;
-
-                let badgeClass = 'bg-slate-100 text-slate-700 border-slate-200 hover:bg-slate-200';
-                if (isSelected) badgeClass = 'bg-teal-600 text-white border-teal-600 ring-2 ring-teal-500/20 shadow-sm';
-                else if (isDone) badgeClass = 'bg-emerald-50 text-emerald-800 border-emerald-300';
-
-                return (
-                  <button
-                    key={pt.id}
-                    type="button"
-                    onClick={() => setActiveDiscPointId(pt.id)}
-                    className={`px-3.5 py-2 rounded-xl border text-xs font-bold transition-all shrink-0 cursor-pointer ${badgeClass}`}
-                  >
-                    {isDone ? '✓ ' : isSelected ? '● ' : '○ '}
-                    {pt.label} ({pt.baseLoad.toFixed(3)} {pt.unit})
-                  </button>
-                );
-              })}
-            </div>
-
-            {/* Wizard Component for Selected Load Point */}
-            {(() => {
-              const activePt = discriminationPoints.find((p) => p.id === activeDiscPointId) || discriminationPoints[0];
-              const activeObs = (session.discriminationObservations || []).find((o) => o.testPointId === activePt.id);
-
-              return (
-                <DiscriminationWizard
-                  key={activePt.id}
-                  testPoint={activePt}
-                  dVal={dVal}
-                  dUnit={dUnit}
-                  existingObservation={activeObs}
-                  onSaveObservation={handleSaveDiscriminationObservation}
-                />
-              );
-            })()}
-
-            {/* Discrimination Observations Summary Table */}
-            <div className="space-y-2">
-              <h4 className="text-xs font-extrabold uppercase tracking-wider text-slate-700">
-                Discrimination Test Summary Table
-              </h4>
-              <div className="overflow-x-auto border border-slate-200 rounded-xl">
-                <table className="w-full text-left border-collapse">
-                  <thead>
-                    <tr className="bg-slate-50 text-[11px] font-semibold uppercase tracking-wider text-slate-500 border-b border-slate-200">
-                      <th className="py-2.5 px-4">Test Point</th>
-                      <th className="py-2.5 px-4">Base Load</th>
-                      <th className="py-2.5 px-4">Scale Interval (d)</th>
-                      <th className="py-2.5 px-4">Applied 1.4d</th>
-                      <th className="py-2.5 px-4">Initial I</th>
-                      <th className="py-2.5 px-4">Transition (I − d)</th>
-                      <th className="py-2.5 px-4">Final Indication</th>
-                      <th className="py-2.5 px-4">Expected (I + d)</th>
-                      <th className="py-2.5 px-4">Discrimination Check</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100 text-xs font-mono text-slate-800">
-                    {session.discriminationObservations && session.discriminationObservations.length > 0 ? (
-                      session.discriminationObservations.map((disc) => (
-                        <tr key={disc.testPointId} className="hover:bg-slate-50">
-                          <td className="py-2.5 px-4 font-sans font-bold text-slate-900">{disc.testPointLabel}</td>
-                          <td className="py-2.5 px-4 font-bold">{disc.load.toFixed(3)} {disc.loadUnit}</td>
-                          <td className="py-2.5 px-4 text-teal-700 font-bold">{disc.scaleIntervalD} {disc.dUnit}</td>
-                          <td className="py-2.5 px-4 text-teal-700 font-bold">{disc.onePointFourD} {disc.dUnit}</td>
-                          <td className="py-2.5 px-4 font-bold">{disc.initialIndication.toFixed(3)} {disc.loadUnit}</td>
-                          <td className="py-2.5 px-4 font-bold text-amber-700">
-                            {(disc.transitionIndication || disc.expectedLowerIndication || 0).toFixed(3)} {disc.loadUnit}
-                          </td>
-                          <td className="py-2.5 px-4 font-bold">
-                            {(disc.finalIndication || 0).toFixed(3)} {disc.loadUnit}
-                          </td>
-                          <td className="py-2.5 px-4 font-bold text-emerald-700">
-                            {(disc.expectedFinalIndication || 0).toFixed(3)} {disc.loadUnit}
-                          </td>
-                          <td className="py-2.5 px-4 font-sans">
-                            <span
-                              className={`px-2.5 py-0.5 rounded font-bold inline-flex items-center gap-1 ${
-                                disc.passed
-                                  ? 'bg-emerald-50 text-emerald-800 border border-emerald-300'
-                                  : 'bg-amber-50 text-amber-800 border border-amber-300'
-                              }`}
-                            >
-                              {disc.passed ? '✓ Response Confirmed' : '✕ Not Observed'}
-                            </span>
-                          </td>
-                        </tr>
-                      ))
-                    ) : (
-                      <tr>
-                        <td colSpan={9} className="py-6 text-center text-slate-400 font-sans">
-                          No discrimination test points recorded yet. Select Test Point 1 (Minimum Load) above to begin.
-                        </td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-
-            {/* Bottom Toolbar */}
-            <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-4 border-t border-slate-200">
-              <button
-                type="button"
-                onClick={() => setActiveTab('repeatability')}
-                className="flex items-center gap-1.5 px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold text-xs rounded-lg transition-colors cursor-pointer"
-              >
-                <ChevronLeft className="w-4 h-4" /> Previous Test (Repeatability)
-              </button>
-
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={handleSaveDraft}
-                  className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-800 font-semibold text-xs rounded-lg transition-colors border border-slate-200 cursor-pointer"
-                >
-                  Save Draft
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => {
-                    if ((session.discriminationObservations || []).filter((o) => o.isCompleted || o.resultStatus).length < 3) {
-                      showToast('Incomplete Discrimination Test', 'Complete all 3 required test points (Min, Half Max, Max) before continuing.', 'warning');
-                      return;
-                    }
-                    setActiveTab('review');
-                    showToast('Discrimination Test Saved', 'All 3 test points confirmed.', 'success');
-                  }}
-                  className="flex items-center gap-1.5 px-5 py-2.5 bg-teal-600 hover:bg-teal-700 text-white font-bold text-xs rounded-lg cursor-pointer shadow-xs"
-                >
-                  Save &amp; Continue to Review <ChevronRight className="w-4 h-4" />
-                </button>
-              </div>
-            </div>
+          <div className="p-6">
+            <OIMLDiscriminationSheet
+              session={session}
+              instrument={currentInstrument}
+              activeRole={activeRole}
+              isReadOnly={!canEditTestSession(session, activeRole)}
+              onSaveObservation={handleSaveDiscriminationObservation}
+            />
           </div>
         )}
 
@@ -2199,7 +1558,7 @@ export const TestExecution: React.FC = () => {
 
               {/* Highlight correction reason if CHANGES_REQUESTED */}
               {session.workflowStatus === 'CHANGES_REQUESTED' && session.correctionReason && (
-                <div className="p-3.5 bg-rose-950/80 border border-rose-700/60 rounded-xl text-xs space-y-1">
+                <div className="p-3.5 bg-rose-950/80 border border-rose-700/60 rounded-xl text-xs space-y-2">
                   <span className="font-bold text-rose-300 block flex items-center gap-1.5">
                     <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
                     Correction Requested by Reviewer ({session.correctionRequestedBy}):
@@ -2209,22 +1568,37 @@ export const TestExecution: React.FC = () => {
               )}
 
               {/* TESTING OFFICER ACTIONS */}
-              {activeRole === 'Testing Officer' && (
+              {(activeRole === 'Testing Officer' || activeRole === 'TESTING_OFFICER' || activeRole === 'Admin' || activeRole === 'ADMIN') && (
                 <div className="flex flex-col sm:flex-row items-center justify-between gap-4">
                   <p className="text-xs text-slate-300">
-                    {canSubmitForReview(session, activeRole)
-                      ? 'Confirm all readings are recorded before submitting for senior technical review.'
+                    {session.workflowStatus === 'CHANGES_REQUESTED'
+                      ? 'Review the correction request above and resume testing to update observations.'
+                      : canSubmitForReview(session, activeRole)
+                      ? 'Confirm all required test readings are recorded before submitting for senior technical review.'
                       : `Session is currently ${getWorkflowStatusLabel(session.workflowStatus)}. Locked for editing.`}
                   </p>
                   <div className="flex items-center gap-2">
                     <button
+                      type="button"
                       onClick={() => setActiveTab('weighing')}
                       className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold text-xs rounded-lg transition-colors cursor-pointer"
                     >
                       Return to Test
                     </button>
-                    {canSubmitForReview(session, activeRole) && (
+
+                    {session.workflowStatus === 'CHANGES_REQUESTED' && (
                       <button
+                        type="button"
+                        onClick={handleResumeTesting}
+                        className="flex items-center gap-2 px-5 py-2.5 bg-amber-600 hover:bg-amber-500 text-white font-bold text-xs rounded-lg transition-colors shadow-md cursor-pointer"
+                      >
+                        <RefreshCw className="w-4 h-4" /> Resume Testing
+                      </button>
+                    )}
+
+                    {(session.workflowStatus === 'DRAFT' || session.workflowStatus === 'IN_PROGRESS') && (
+                      <button
+                        type="button"
                         onClick={handleSubmitForReview}
                         className="flex items-center gap-2 px-5 py-2.5 bg-teal-600 hover:bg-teal-500 text-white font-bold text-xs rounded-lg transition-colors shadow-md cursor-pointer"
                       >
@@ -2236,53 +1610,72 @@ export const TestExecution: React.FC = () => {
               )}
 
               {/* TECHNICAL REVIEWER ACTIONS */}
-              {activeRole === 'Technical Reviewer' && (
+              {(activeRole === 'Technical Reviewer' || activeRole === 'TECHNICAL_REVIEWER' || activeRole === 'Admin' || activeRole === 'ADMIN') && (
                 <div className="space-y-3">
                   <p className="text-xs text-slate-300">
                     As Senior Technical Reviewer, audit recorded observations and approve or request correction.
                   </p>
 
-                  <div className="space-y-1.5">
-                    <label className="text-[11px] font-bold text-slate-300 block">
-                      Reviewer Audit Comments (Persisted):
-                    </label>
-                    <textarea
-                      rows={2}
-                      value={reviewerCommentInput}
-                      onChange={(e) => setReviewerCommentInput(e.target.value)}
-                      placeholder="Enter technical audit notes, observations status, or reason for correction..."
-                      className="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-lg text-xs text-slate-100 placeholder-slate-500 focus:outline-hidden focus:border-teal-500 font-mono"
-                    />
-                  </div>
-
-                  <div className="flex items-center justify-between gap-3 pt-1">
-                    <span className="text-[11px] text-slate-400">
-                      Current State: <strong className="text-teal-300">{getWorkflowStatusLabel(session.workflowStatus)}</strong>
-                    </span>
-
-                    <div className="flex items-center gap-2">
+                  {session.workflowStatus === 'TESTING_COMPLETE' && (
+                    <div className="flex items-center justify-between gap-3 pt-1">
+                      <span className="text-xs text-slate-400">
+                        Session testing is complete and ready for technical audit.
+                      </span>
                       <button
                         type="button"
-                        onClick={handleRequestChanges}
-                        className="flex items-center gap-1.5 px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs rounded-lg transition-colors cursor-pointer"
+                        onClick={handleClaimReview}
+                        className="flex items-center gap-2 px-5 py-2.5 bg-teal-600 hover:bg-teal-500 text-white font-bold text-xs rounded-lg transition-colors shadow-md cursor-pointer"
                       >
-                        <AlertTriangle className="w-3.5 h-3.5" /> Request Changes
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={handleApproveReview}
-                        className="flex items-center gap-1.5 px-5 py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs rounded-lg transition-colors shadow-md cursor-pointer"
-                      >
-                        <ShieldCheck className="w-4 h-4" /> Technical Approve
+                        <Eye className="w-4 h-4" /> Claim &amp; Begin Review
                       </button>
                     </div>
-                  </div>
+                  )}
+
+                  {session.workflowStatus === 'UNDER_REVIEW' && (
+                    <>
+                      <div className="space-y-1.5">
+                        <label className="text-[11px] font-bold text-slate-300 block">
+                          Reviewer Audit Comments (Persisted):
+                        </label>
+                        <textarea
+                          rows={2}
+                          value={reviewerCommentInput}
+                          onChange={(e) => setReviewerCommentInput(e.target.value)}
+                          placeholder="Enter technical audit notes, observations status, or reason for correction..."
+                          className="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-lg text-xs text-slate-100 placeholder-slate-500 focus:outline-hidden focus:border-teal-500 font-mono"
+                        />
+                      </div>
+
+                      <div className="flex items-center justify-between gap-3 pt-1">
+                        <span className="text-[11px] text-slate-400">
+                          Current State: <strong className="text-teal-300">{getWorkflowStatusLabel(session.workflowStatus)}</strong>
+                        </span>
+
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={handleRequestChanges}
+                            className="flex items-center gap-1.5 px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs rounded-lg transition-colors cursor-pointer"
+                          >
+                            <AlertTriangle className="w-3.5 h-3.5" /> Request Changes
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={handleApproveReview}
+                            className="flex items-center gap-1.5 px-5 py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs rounded-lg transition-colors shadow-md cursor-pointer"
+                          >
+                            <ShieldCheck className="w-4 h-4" /> Technical Approve
+                          </button>
+                        </div>
+                      </div>
+                    </>
+                  )}
                 </div>
               )}
 
               {/* LAB DIRECTOR ACTIONS */}
-              {activeRole === 'Approving Officer / Lab Director' && (
+              {(activeRole === 'Approving Officer / Lab Director' || activeRole === 'LAB_DIRECTOR' || activeRole === 'Admin' || activeRole === 'ADMIN') && (
                 <div className="flex flex-col sm:flex-row items-center justify-between gap-4">
                   <div className="space-y-1">
                     <p className="text-xs text-slate-300">
@@ -2295,22 +1688,31 @@ export const TestExecution: React.FC = () => {
 
                   <div className="flex items-center gap-2">
                     {session.workflowStatus === 'TECHNICALLY_APPROVED' && (
-                      <button
-                        type="button"
-                        onClick={handleDirectorApprove}
-                        className="flex items-center gap-2 px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs rounded-lg transition-colors shadow-md cursor-pointer"
-                      >
-                        <CheckCircle2 className="w-4 h-4" /> Approve Evaluation
-                      </button>
+                      <>
+                        <button
+                          type="button"
+                          onClick={handleDirectorRequestChanges}
+                          className="flex items-center gap-1.5 px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs rounded-lg transition-colors cursor-pointer"
+                        >
+                          <AlertTriangle className="w-3.5 h-3.5" /> Request Changes
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleDirectorApprove}
+                          className="flex items-center gap-2 px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs rounded-lg transition-colors shadow-md cursor-pointer"
+                        >
+                          <CheckCircle2 className="w-4 h-4" /> Approve Evaluation
+                        </button>
+                      </>
                     )}
 
-                    {(session.workflowStatus === 'APPROVED' || session.workflowStatus === 'TECHNICALLY_APPROVED') && (
+                    {session.workflowStatus === 'APPROVED' && (
                       <button
                         type="button"
                         onClick={handleFinalizeCertificate}
                         className="flex items-center gap-2 px-6 py-2.5 bg-teal-600 hover:bg-teal-500 text-white font-bold text-xs rounded-lg transition-colors shadow-md cursor-pointer"
                       >
-                        <Award className="w-4 h-4" /> Finalize & Issue Certificate
+                        <Award className="w-4 h-4" /> Finalize &amp; Issue Certificate
                       </button>
                     )}
 
@@ -2373,7 +1775,48 @@ export const TestExecution: React.FC = () => {
             </div>
           </div>
         )}
+
+        {/* BOTTOM 3 ACTION BUTTONS (Section 10 UX Spec) */}
+        <div className="p-4 bg-slate-50 border-t border-slate-200 flex items-center justify-between no-print rounded-b-xl">
+          <button
+            type="button"
+            onClick={() => {
+              const order = ['plan', 'zerosetting', 'tare', 'eccentricity', 'weighing', 'repeatability', 'discrimination', 'statictemp', 'disturbance', 'review'];
+              const idx = order.indexOf(activeTab);
+              if (idx > 0) setActiveTab(order[idx - 1] as any);
+            }}
+            disabled={['plan', 'zerosetting', 'tare', 'eccentricity', 'weighing', 'repeatability', 'discrimination', 'statictemp', 'disturbance', 'review'].indexOf(activeTab) <= 0}
+            className="flex items-center gap-2 px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded-lg transition-colors cursor-pointer disabled:opacity-40"
+          >
+            <ChevronLeft className="w-4 h-4" /> {t('tests.previousTest')}
+          </button>
+
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={handleSaveDraft}
+              className="flex items-center gap-2 px-4 py-2 bg-slate-200 hover:bg-slate-300 text-slate-800 font-bold text-xs rounded-lg transition-colors cursor-pointer border border-slate-300"
+            >
+              <Save className="w-4 h-4" /> {t('tests.saveDraft')}
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                handleSaveDraft();
+                const order = ['plan', 'zerosetting', 'tare', 'eccentricity', 'weighing', 'repeatability', 'discrimination', 'statictemp', 'disturbance', 'review'];
+                const idx = order.indexOf(activeTab);
+                if (idx < order.length - 1) setActiveTab(order[idx + 1] as any);
+              }}
+              disabled={['plan', 'zerosetting', 'tare', 'eccentricity', 'weighing', 'repeatability', 'discrimination', 'statictemp', 'disturbance', 'review'].indexOf(activeTab) >= 9}
+              className="flex items-center gap-2 px-5 py-2 bg-[#0B1F3A] hover:bg-slate-800 text-white font-bold text-xs rounded-lg transition-colors cursor-pointer disabled:opacity-40 shadow-sm"
+            >
+              {t('tests.saveAndNext')} <ChevronRight className="w-4 h-4 text-[#C8A46B]" />
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   );
 };
+
